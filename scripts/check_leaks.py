@@ -42,6 +42,12 @@ PUBLIC_HOSTS = {"github.com", "id.atlassian.com"}
 
 MINIMUM_LENGTH = 6
 
+# Public cloud region and zone names, such as us-west1 or europe-west3-b.
+
+REGION_PATTERN = re.compile(
+    r"(?:africa|asia|australia|europe|me|northamerica|southamerica|us)"
+    r"-[a-z]+\d+(?:-[a-z])?")
+
 
 def private_values():
     values = set()
@@ -57,7 +63,8 @@ def private_values():
 
     return {
         value for value in values
-        if len(value) >= MINIMUM_LENGTH and value.lower() not in COMMON_VALUES
+        if len(value) >= MINIMUM_LENGTH and value.lower() not in COMMON_VALUES and
+        not REGION_PATTERN.fullmatch(value)
     }
 
 

@@ -57,6 +57,8 @@ TEAM_SCHEMA = {
     "faro.image_pattern": "pattern",
     "faro.repository": "repository",
     "faro.tag_format": "tag_format",
+    "gcloud.configurations": "gcloud_configurations",
+    "gcloud.environments": "table",
     "jenkins.commit_pattern": "pattern",
     "jenkins.folder": "str",
     "jenkins.url": "url",
@@ -76,7 +78,10 @@ TEAM_SCHEMA = {
     "slack.webhook_url": "url",
 }
 
-OPTIONAL_KEYS = {"server.port", "slack.webhook_url"}
+OPTIONAL_KEYS = {
+    "gcloud.configurations", "gcloud.environments", "server.port",
+    "slack.webhook_url",
+}
 
 # Environment variables that override a setting, first match wins. The
 # JIRA_API_* names are only a fallback for people who already use them.
@@ -276,6 +281,25 @@ def validate_kind(kind, value):
                 isinstance(item, str) for item in value):
 
             return "must be a list of strings"
+    elif kind == "gcloud_configurations":
+        if not isinstance(value, dict) or not value:
+            return "must be a table with at least one configuration"
+
+        for name, configuration in value.items():
+            if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+                return (
+                    f"has an invalid configuration name {name!r} (lowercase "
+                    f"letters, digits and hyphens, starting with a letter)")
+
+            if not isinstance(configuration, dict) or not isinstance(
+                    configuration.get("project"), str):
+
+                return f"must give a project for {name}"
+
+            unknown = set(configuration) - {"project", "region", "zone"}
+
+            if unknown:
+                return f"has unknown keys for {name}: {', '.join(sorted(unknown))}"
     elif kind in ("table", "url_table"):
         if not isinstance(value, dict) or not value:
             return "must be a table with at least one entry"
@@ -335,6 +359,28 @@ def validate_team(team):
     if missing:
         problems.append(
             f"argocd.urls has no URL for {', '.join(sorted(missing))}")
+
+    configurations = get_value(team, "gcloud.configurations") or {}
+    gcloud_environments = get_value(team, "gcloud.environments") or {}
+
+    if gcloud_environments and not configurations:
+        problems.append("gcloud.environments needs gcloud.configurations")
+
+    for environment, names in gcloud_environments.items():
+        if environment not in environments:
+            problems.append(
+                f"gcloud.environments has {environment}, which is not in "
+                f"charts.files")
+        elif not isinstance(names, list) or not names:
+            problems.append(
+                f"gcloud.environments.{environment} must list configuration names")
+        else:
+            unknown = [name for name in names if name not in configurations]
+
+            if unknown:
+                problems.append(
+                    f"gcloud.environments.{environment} names unknown "
+                    f"configurations: {', '.join(unknown)}")
 
     prd_environment = get_value(team, "release.prd_environment")
 

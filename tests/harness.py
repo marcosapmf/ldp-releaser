@@ -91,6 +91,15 @@ prd_environment = "prd"
 
 [slack]
 webhook_url = "{url}/slack"
+
+[gcloud.configurations]
+team-stg = {{ project = "example-staging", region = "us-west1", zone = "us-west1-a" }}
+team-prd-1 = {{ project = "example-prd-1", region = "europe-west1" }}
+team-prd-2 = {{ project = "example-prd-2" }}
+
+[gcloud.environments]
+stg = ["team-stg"]
+prd = ["team-prd-1", "team-prd-2"]
 """
 
 PERSONAL = """
@@ -137,6 +146,7 @@ class AppTestCase(unittest.TestCase):
 
         self.create_charts()
         self.write_settings()
+        self.before_start()
         self.start_app()
 
     def tearDown(self):
@@ -144,6 +154,9 @@ class AppTestCase(unittest.TestCase):
         self.fakes.stop()
 
         shutil.rmtree(self.temp, ignore_errors=True)
+
+    def before_start(self):
+        pass
 
     def call(self, path, payload=None):
         data = None
@@ -190,6 +203,9 @@ class AppTestCase(unittest.TestCase):
         }
 
         environment.update(
+            CLOUDSDK_CONFIG=str(self.temp / "gcloud-sdk"),
+            FAKE_GCLOUD_ACCOUNT="tester@example.com",
+            FAKE_GCLOUD_STATE=str(self.temp / "gcloud.json"),
             FAKE_GH_STATE=str(self.gh_state),
             FAKE_ORIGIN=str(self.origin),
             GIT_AUTHOR_EMAIL="test@example.com",

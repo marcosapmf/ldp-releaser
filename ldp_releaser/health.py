@@ -8,6 +8,8 @@ import threading
 import time
 import urllib.error
 
+from . import gcloud
+
 CACHE_SECONDS = 60
 
 cache = {"checkedAt": 0, "checks": []}
@@ -108,6 +110,11 @@ def checks(jenkins, jira, settings, refresh=False):
         result("Python", check_python(), required=True),
         result("Slack", check_slack(settings), required=False),
     ]
+
+    if gcloud.configured(settings):
+        results.append(
+            result("gcloud", "; ".join(gcloud.problems(settings)) or None,
+                   required=False))
 
     with cache_lock:
         cache["checkedAt"] = time.time()

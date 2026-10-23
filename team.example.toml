@@ -81,3 +81,15 @@ prd_environment = "prd"     # a run touching it is a PRD release: tags + auto-cl
 
 [slack]
 webhook_url = ""            # optional: Slack workflow called when a charts PR opens
+
+# Optional: gcloud configurations created on each person's machine with their
+# own gcloud login. Existing configurations are never changed.
+[gcloud.configurations]
+staging = { project = "example-staging", region = "us-west1", zone = "us-west1-a" }
+prd-eu = { project = "example-prd-eu", region = "europe-west1", zone = "europe-west1-b" }
+prd-us = { project = "example-prd-us", region = "us-central1", zone = "us-central1-a" }
+
+# Release environment -> configurations it touches.
+[gcloud.environments]
+stg = ["staging"]
+prd = ["prd-eu", "prd-us"]

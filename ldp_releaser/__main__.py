@@ -9,7 +9,7 @@ import urllib.error
 if sys.version_info < (3, 11):
     sys.exit("LDP Releaser needs Python 3.11 or newer")
 
-from . import config, release, server, store, wizard
+from . import config, gcloud, release, server, store, wizard
 from .clients import Jenkins, Jira
 
 
@@ -45,6 +45,13 @@ def main():
     jira = Jira(settings["jira.url"], settings["jira.token"], settings["jira.email"])
 
     account = check_credentials(jenkins, jira)
+
+    # Configurations added to the team file after someone's setup are
+    # created on their next start. Existing ones are left untouched.
+
+    for line in gcloud.sync(settings):
+        if not line.endswith("already set up"):
+            print(f"gcloud: {line}", flush=True)
 
     release.configure(settings, store.mark_dirty)
 

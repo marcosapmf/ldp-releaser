@@ -9,7 +9,7 @@ import tomllib
 import urllib.error
 from pathlib import Path
 
-from . import config, health
+from . import config, gcloud, health
 from .clients import Jenkins, Jira
 
 
@@ -295,6 +295,16 @@ def ensure_configured(force=False):
     config.write_personal(personal)
 
     print(f"  Saved to {config.PERSONAL_FILE}")
+
+    report = gcloud.sync(settings)
+
+    if report:
+        print()
+        print("gcloud configurations (your own gcloud login is used):")
+
+        for line in report:
+            print(f"  {line}")
+
     print()
 
 

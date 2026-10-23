@@ -1,5 +1,7 @@
 """The first-run setup in the terminal."""
 
+import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,6 +25,8 @@ class SetupTest(AppTestCase):
         for path in (self.temp / "config" / "ldp-releaser").iterdir():
             path.unlink()
 
+        (self.temp / "gcloud.json").unlink(missing_ok=True)
+
     def test_first_run_asks_for_everything(self):
         team_file = self.temp / "shared.team.toml"
         team_file.write_text(TEAM.format(url=self.fakes.url))
@@ -42,9 +46,19 @@ class SetupTest(AppTestCase):
             str(self.port),
         ]) + "\n"
 
+        # A PATH with the fakes, git and Python but without the 1Password
+        # CLI, so the setup asks for a file path.
+
+        tools = self.temp / "tools"
+        tools.mkdir()
+
+        for name in ("git", "python3"):
+            (tools / name).symlink_to(shutil.which(name))
+
         process = subprocess.Popen(
             [sys.executable, "-m", "ldp_releaser"], cwd=ROOT,
-            env={**self.environment(), "PATH": "/usr/bin:/bin"},
+            env={**self.environment(),
+                 "PATH": f"{ROOT / 'tests' / 'bin'}{os.pathsep}{tools}"},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True)
 
@@ -72,6 +86,7 @@ class SetupTest(AppTestCase):
         self.assertIn("Jira: logged in as Test User", output)
         self.assertIn("is not a git checkout", output)
         self.assertIn("running on", output)
+        self.assertIn("team-stg: created for example-staging", output)
 
         directory = self.temp / "config" / "ldp-releaser"
 

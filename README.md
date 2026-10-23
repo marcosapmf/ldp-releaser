@@ -17,6 +17,8 @@ comes from settings files that are **not** part of this repository.
   push access to the charts repository and the repositories you tag
 - An SSH key or credential helper that lets `git push` to the charts repository
 - A local clone of the charts repository
+- The gcloud CLI with your own `gcloud auth login`, if the team file lists
+  gcloud configurations
 
 ## Getting started
 
@@ -38,6 +40,11 @@ The first start asks for:
    - your Atlassian account email and API token
    - the path to your clone of the charts repository
    - the port for the page (default 8766)
+
+If the team file lists gcloud configurations, the setup also creates the
+missing ones with your own gcloud login (run `gcloud auth login` first).
+Configurations you already have are never changed, and your active
+configuration stays active.
 
 Then open `http://127.0.0.1:<port>`. Later starts go straight to the page.
 Run `./ldp-releaser --setup` to replace the team file or change your

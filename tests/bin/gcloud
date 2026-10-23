@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Fake gcloud for the tests: keeps configurations in FAKE_GCLOUD_STATE and
+reports FAKE_GCLOUD_ACCOUNT as the active login."""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+STATE = Path(os.environ["FAKE_GCLOUD_STATE"])
+
+
+def main():
+    state = {"active": "default", "configurations": {}}
+
+    if STATE.exists():
+        state = json.loads(STATE.read_text())
+
+    arguments = sys.argv[1:]
+    code = 0
+
+    if arguments[:2] == ["auth", "list"]:
+        print(os.environ.get("FAKE_GCLOUD_ACCOUNT", ""))
+    elif arguments[:3] == ["config", "configurations", "describe"]:
+        configuration = state["configurations"].get(arguments[3])
+
+        if configuration is None:
+            print(f"ERROR: Cannot find a configuration named [{arguments[3]}].", file=sys.stderr)
+
+            code = 1
+        else:
+            print(json.dumps({"name": arguments[3], "properties": configuration}))
+    elif arguments[:3] == ["config", "configurations", "create"]:
+        state["configurations"][arguments[3]] = {}
+
+        if "--no-activate" not in arguments:
+            state["active"] = arguments[3]
+    elif arguments[:3] == ["config", "configurations", "delete"]:
+        for name in arguments[3:]:
+            if not name.startswith("--"):
+                state["configurations"].pop(name, None)
+    elif arguments[:2] == ["config", "set"] and arguments[3] in os.environ.get(
+            "FAKE_GCLOUD_FORBIDDEN_PROJECTS", "").split(","):
+
+        print(f"ERROR: you cannot access project [{arguments[3]}]", file=sys.stderr)
+
+        code = 1
+    elif arguments[:2] == ["config", "set"]:
+        name = next(
+            argument.split("=", 1)[1] for argument in arguments
+            if argument.startswith("--configuration="))
+        section, _, key = arguments[2].rpartition("/")
+
+        state["configurations"][name].setdefault(section or "core", {})[key] = arguments[3]
+    else:
+        sys.exit(f"fake gcloud: unsupported {arguments}")
+
+    STATE.write_text(json.dumps(state))
+
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
