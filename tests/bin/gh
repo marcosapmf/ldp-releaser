@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Fake gh for the tests, working on a local bare repository as "GitHub".
+
+Pull requests behave according to the tag suffix in their body:
+    ...ccccccc  closed without being merged
+    ...eeeeeee  merged with a merge commit instead of a squash
+    ...fffffff  stays open until the file merge-now exists in FAKE_GH_STATE
+Any other pull request is approved and squash-merged on the third check.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ORIGIN = os.environ["FAKE_ORIGIN"]
+STATE_DIR = Path(os.environ["FAKE_GH_STATE"])
+STATE_FILE = STATE_DIR / "state.json"
+
+
+def git(*args):
+    return subprocess.run(
+        ["git", "--git-dir", ORIGIN, *args], capture_output=True, check=True,
+        text=True).stdout.strip()
+
+
+def option(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+
+def main():
+    state = {"next": 1, "pulls": {}, "tags": {}}
+
+    if STATE_FILE.exists():
+        state = json.loads(STATE_FILE.read_text())
+
+    command = sys.argv[1:3]
+    code = 0
+
+    if command == ["pr", "create"]:
+        number = state["next"]
+        state["next"] += 1
+        state["pulls"][str(number)] = {
+            "base": option("--base"),
+            "body": option("--body"),
+            "head": option("--head"),
+            "title": option("--title"),
+            "views": 0,
+        }
+
+        print(f"https://github.example/pull/{number}")
+    elif command == ["pr", "list"]:
+        key = option("--search").split()[0]
+        base = option("--base")
+
+        print(json.dumps([
+            {
+                "headRefName": pull["head"],
+                "title": pull["title"],
+                "url": f"https://github.example/pull/{number}",
+            }
+            for number, pull in state["pulls"].items()
+            if pull["base"] == base and key in pull["title"] and
+            not pull.get("merged") and not pull.get("closed")
+        ]))
+    elif command == ["pr", "view"]:
+        number = sys.argv[3].rsplit("/", 1)[1]
+        print(json.dumps(view(state, number)))
+    elif sys.argv[1] == "api":
+        code = api(state)
+    else:
+        sys.exit(f"fake gh: unsupported {sys.argv[1:]}")
+
+    STATE_FILE.write_text(json.dumps(state))
+
+    sys.exit(code)
+
+
+def api(state):
+    path = next(argument for argument in sys.argv[2:] if argument.startswith("repos/"))
+    parts = path.split("/")
+    repository = f"{parts[1]}/{parts[2]}"
+
+    if len(parts) == 3:
+        print("true")
+
+        return 0
+
+    if "--method" in sys.argv:
+        fields = dict(
+            argument.split("=", 1) for argument in sys.argv
+            if argument.startswith(("ref=", "sha=")))
+        tag = fields["ref"].removeprefix("refs/tags/")
+
+        if f"{repository}:{tag}" in state["tags"]:
+            print("gh: Reference already exists (HTTP 422)", file=sys.stderr)
+
+            return 1
+
+        state["tags"][f"{repository}:{tag}"] = fields["sha"]
+
+        print(fields["ref"])
+
+        return 0
+
+    tag = parts[-1]
+
+    if f"{repository}:{tag}" not in state["tags"]:
+        print('{"message":"Not Found"}')
+        print("gh: Not Found (HTTP 404)", file=sys.stderr)
+
+        return 1
+
+    print(json.dumps({"ref": f"refs/tags/{tag}"}))
+
+    return 0
+
+
+def view(state, number):
+    pull = state["pulls"][number]
+    pull["views"] += 1
+
+    result = {
+        "commits": [],
+        "mergeCommit": None,
+        "number": int(number),
+        "reviewDecision": "REVIEW_REQUIRED",
+        "state": "OPEN",
+    }
+
+    if pull.get("merged"):
+        result.update(
+            commits=[{"oid": pull["headSha"]}], mergeCommit={"oid": pull["merged"]},
+            reviewDecision="APPROVED", state="MERGED")
+
+        return result
+
+    if pull.get("closed"):
+        result["state"] = "CLOSED"
+
+        return result
+
+    if pull["views"] >= 2:
+        result["reviewDecision"] = "APPROVED"
+
+    held = "fffffff" in pull["body"] and not (STATE_DIR / "merge-now").exists()
+
+    if held or pull["views"] < 3:
+        return result
+
+    if "ccccccc" in pull["body"]:
+        pull["closed"] = True
+        result["state"] = "CLOSED"
+
+        return result
+
+    head = git("rev-parse", f"refs/heads/{pull['head']}")
+    base = git("rev-parse", f"refs/heads/{pull['base']}")
+    tree = git("rev-parse", f"{head}^{{tree}}")
+
+    if "eeeeeee" in pull["body"]:
+        merged = git("commit-tree", tree, "-p", base, "-p", head, "-m", f"Merge #{number}")
+    else:
+        merged = git("commit-tree", tree, "-p", base, "-m", f"{pull['title']} (#{number})")
+
+    git("update-ref", f"refs/heads/{pull['base']}", merged)
+    git("update-ref", "-d", f"refs/heads/{pull['head']}")
+
+    pull["headSha"] = head
+    pull["merged"] = merged
+
+    result.update(
+        commits=[{"oid": head}], mergeCommit={"oid": merged},
+        reviewDecision="APPROVED", state="MERGED")
+
+    return result
+
+
+if __name__ == "__main__":
+    main()

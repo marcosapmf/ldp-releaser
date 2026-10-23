@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Real settings never live in the repository.
+config.toml
+ldp-releaser.team.toml
+*.team.toml
+!team.example.toml
+!config.example.toml
+.env

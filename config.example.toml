@@ -1,0 +1,22 @@
+# LDP Releaser personal settings: one file per person, written by the
+# first-run setup to ~/.config/ldp-releaser/config.toml (readable only by
+# you). You normally never edit it by hand; run `./ldp-releaser --setup`.
+#
+# Every value can also come from an environment variable:
+#   LDP_JENKINS_USER, LDP_JENKINS_TOKEN, LDP_JIRA_EMAIL, LDP_JIRA_TOKEN
+#   (JIRA_API_USER / JIRA_API_TOKEN are used as a fallback),
+#   LDP_CHARTS_CHECKOUT, LDP_PORT, LDP_SLACK_WEBHOOK_URL.
+
+[jenkins]
+user = "your-jenkins-user-id"       # the <id> in https://<jenkins>/user/<id>/
+token = "your-jenkins-api-token"    # Jenkins: your name > Security > API Token
+
+[jira]
+email = "you@example.com"           # your Atlassian account email
+token = "your-atlassian-api-token"  # https://id.atlassian.com/manage-profile/security/api-tokens
+
+[charts]
+checkout = "~/projects/charts"      # your clone of the charts repository
+
+[server]
+port = 8766

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Blocks commits that contain secrets or private settings values. Enable it
+# once per clone with: git config core.hooksPath hooks
+
+set -euo pipefail
+
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check_leaks.py" --staged

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Starts LDP Releaser. The first run asks for the team file and your
+# credentials; `./ldp-releaser --setup` asks again.
+
+set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")"
+
+exec python3 -m ldp_releaser "$@"

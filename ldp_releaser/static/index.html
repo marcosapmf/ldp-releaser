@@ -1,0 +1,1045 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDP Releaser</title>
+<style>
+:root {
+  --accent: #2f6fde;
+  --accent-text: #ffffff;
+  --bg: #f5f6f8;
+  --border: #dde1e7;
+  --code-bg: #10161d;
+  --code-text: #d5dce4;
+  --fail: #c43a3a;
+  --muted: #5d6877;
+  --ok: #1d8549;
+  --run: #2f6fde;
+  --surface: #ffffff;
+  --text: #1b232e;
+  --warn: #b26f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #5d8ff0;
+    --bg: #0f1318;
+    --border: #2a323d;
+    --code-bg: #0a0d11;
+    --fail: #e46767;
+    --muted: #95a1b1;
+    --ok: #47bb7c;
+    --run: #5d8ff0;
+    --surface: #171c23;
+    --text: #e4e9ef;
+    --warn: #e2a54a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+}
+main { margin: 0 auto; max-width: 860px; padding: 32px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.subtitle { color: var(--muted); margin: 0 0 24px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  padding: 20px;
+}
+form { display: grid; gap: 20px; }
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 14px 16px 16px;
+}
+legend { font-weight: 700; padding: 0 6px; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+input[type=text] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 11px;
+  width: 100%;
+}
+input[type=text]:disabled { opacity: .5; }
+.choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.choices label {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+  margin: 0;
+  padding: 8px 18px;
+}
+.choices input { display: none; }
+.choices label:has(input:checked) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+.hint code { font-size: 12px; }
+button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  color: var(--accent-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 18px;
+}
+button:disabled { cursor: progress; opacity: .6; }
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 500;
+  padding: 5px 12px;
+}
+.form-error { color: var(--fail); min-height: 1em; }
+h2 { font-size: 16px; margin: 32px 0 12px; }
+.tabs { border-bottom: 1px solid var(--border); display: flex; gap: 4px; margin-bottom: 20px; }
+.tabs .tab {
+  background: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding: 8px 14px;
+}
+.tabs .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
+#history-count { color: var(--muted); font-weight: 500; }
+.empty { color: var(--muted); }
+.run-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: space-between;
+}
+.run-title { font-weight: 600; overflow-wrap: anywhere; }
+.run-meta { color: var(--muted); font-size: 13px; }
+.badge {
+  border: 1px solid var(--c);
+  border-radius: 999px;
+  color: var(--c);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  text-transform: uppercase;
+}
+.s-aborted, .s-skipped, .s-pending { --c: var(--muted); }
+.s-failed { --c: var(--fail); }
+.s-queued { --c: var(--warn); }
+.s-running { --c: var(--run); }
+.s-success { --c: var(--ok); }
+.image {
+  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+.error { color: var(--fail); margin-top: 10px; }
+.tickets { font-weight: 600; margin-top: 10px; }
+.health { border-color: var(--warn); }
+.health-head { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.health ul { margin: 10px 0 0; padding-left: 20px; }
+.health li.required { color: var(--fail); }
+.health li.optional { color: var(--muted); }
+.ticket-choices { display: grid; gap: 6px; }
+.ticket-choices label { align-items: baseline; display: flex; font-weight: 400; gap: 8px; margin: 0; }
+.stages { display: grid; gap: 10px; margin-top: 14px; }
+.stage { border-top: 1px solid var(--border); padding-top: 10px; }
+.stage.s-skipped { opacity: .55; }
+.stage-head[data-expand-steps] { cursor: pointer; }
+.steps-bar {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+.link-button {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0;
+}
+.stage-head { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.dot { background: var(--c); border-radius: 50%; height: 9px; width: 9px; }
+.s-running .dot { animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.stage-name { font-weight: 600; }
+.stage-detail { color: var(--muted); font-size: 13px; }
+a { color: var(--accent); }
+details { margin-top: 6px; }
+summary { color: var(--muted); cursor: pointer; font-size: 13px; }
+pre {
+  background: var(--code-bg);
+  border-radius: 6px;
+  color: var(--code-text);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin: 8px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>LDP Releaser</h1>
+  <p class="subtitle">Builds and releases Asah, then builds and deploys Faro. Leave a section empty to skip it. When Asah is released, Faro starts only after the charts PRs are merged.</p>
+
+  <nav class="tabs" role="tablist">
+    <button aria-selected="true" class="tab" data-tab="release" role="tab" type="button">Release</button>
+    <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
+  </nav>
+
+  <div id="release-view">
+  <section class="card health" hidden id="health">
+    <div class="health-head">
+      <strong>Setup problems</strong>
+      <button class="secondary" id="health-refresh" type="button">Check again</button>
+    </div>
+    <ul id="health-problems"></ul>
+  </section>
+
+  <section class="card">
+    <form id="form">
+      <fieldset>
+        <legend>Asah</legend>
+        <div>
+          <label for="asah-branch">Branch to build</label>
+          <input id="asah-branch" list="asah-branches" autocomplete="off" placeholder="e.g. release-1.2.x" type="text">
+          <datalist id="asah-branches"></datalist>
+          <div class="hint">Runs the Asah build job. Leave empty to skip the build.</div>
+        </div>
+        <div>
+          <label>Release to</label>
+          <div class="choices" id="release-choices"></div>
+          <div class="hint" id="release-hint"></div>
+        </div>
+        <div hidden id="tickets-field">
+          <label>Open release tickets</label>
+          <div class="hint" style="margin:0 0 8px">A previous release was not completed. Reuse its tickets or start new ones?</div>
+          <div class="ticket-choices" id="ticket-choices"></div>
+        </div>
+        <div id="tag-suffix-field">
+          <label for="tag-suffix">Tag suffix</label>
+          <input id="tag-suffix" autocomplete="off" placeholder="e.g. 20260101-abc1234" type="text">
+          <div class="hint">Only used when no Asah branch is built; otherwise the suffix comes from the build's images.</div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Faro</legend>
+        <div>
+          <label for="faro-branch">Branch</label>
+          <input id="faro-branch" list="faro-branches" autocomplete="off" placeholder="e.g. faro-1.2.x" type="text">
+          <datalist id="faro-branches"></datalist>
+          <div class="hint">Leave empty to skip the Faro build and deploy.</div>
+        </div>
+        <div>
+          <label>Environment</label>
+          <div class="choices" id="environment-choices"></div>
+          <div class="hint" id="faro-hint"></div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>GitHub tags</legend>
+        <div>
+          <label for="version">Version</label>
+          <input id="version" autocomplete="off" placeholder="e.g. 1.2.3" type="text">
+          <div class="hint" id="version-hint"></div>
+        </div>
+      </fieldset>
+
+      <div><button id="submit" type="submit">Run</button></div>
+      <div class="form-error" id="form-error"></div>
+    </form>
+  </section>
+
+  <h2 id="current-title">Current run</h2>
+  <div id="current-run"><p class="empty">No runs yet.</p></div>
+  </div>
+
+  <div hidden id="history-view">
+    <div id="history-runs"><p class="empty">No previous runs.</p></div>
+  </div>
+</main>
+
+<script>
+const STAGE_LABELS = {
+  asahBuild: "Asah build",
+  jira: "Jira tickets",
+  developPullRequest: "Charts PR to develop",
+  developMerge: "develop PR merged",
+  productionPullRequest: "Charts PR to production",
+  productionMerge: "production PR merged",
+  rollout: "Asah rollout confirmed",
+  faroBuild: "Faro build",
+  faroDeploy: "Faro deploy",
+  tags: "GitHub tags",
+  closeTickets: "Close Jira tickets"
+};
+
+const asahBranchInput = document.getElementById("asah-branch");
+const faroBranchInput = document.getElementById("faro-branch");
+const faroHint = document.getElementById("faro-hint");
+const formError = document.getElementById("form-error");
+const expandedRuns = new Set();
+const openLogs = new Set();
+const releaseHint = document.getElementById("release-hint");
+const runsContainer = document.querySelector("main");
+const submitButton = document.getElementById("submit");
+const tagSuffixInput = document.getElementById("tag-suffix");
+const versionHint = document.getElementById("version-hint");
+const versionInput = document.getElementById("version");
+
+let appConfig = null;
+let lastRunsJson = "";
+let setupBlocked = false;
+let openTickets = [];
+let ticketsLoaded = false;
+
+async function loadOpenTickets() {
+  try {
+    const response = await fetch("/api/release-tickets");
+
+    if (response.ok) {
+      openTickets = await response.json();
+      ticketsLoaded = true;
+    }
+  }
+  catch (error) {
+    console.error(error);
+  }
+
+  renderTicketChoices();
+}
+
+function renderTicketChoices() {
+  const field = document.getElementById("tickets-field");
+
+  field.hidden = !openTickets.length || !selectedReleaseEnvironments().length;
+
+  const previous = document.querySelector("input[name=tickets]:checked")?.value;
+
+  const keys = openTickets.map(ticket => ticket.key).join(", ");
+
+  const choices = openTickets.map(ticket => {
+    let technicalTasks = "no open Technical Task, one will be created";
+
+    if (ticket.technicalTasks.length) {
+      technicalTasks = `Technical Task ${ticket.technicalTasks.map(escapeHtml).join(", ")}`;
+    }
+
+    return `<label><input name="tickets" type="radio" value="reuse:${escapeHtml(ticket.key)}"><span>Reuse <a href="${jiraLink(ticket.key)}" rel="noopener" target="_blank">${escapeHtml(ticket.key)}</a> “${escapeHtml(ticket.summary)}” (${escapeHtml(ticket.assignee.displayName)}; ${escapeHtml(ticket.status)}; ${technicalTasks})</span></label>`;
+  });
+
+  let owners = "";
+  const others = othersTickets();
+
+  if (others.length) {
+    owners = ` (including tickets of ${escapeHtml([...new Set(others.map(ticket => ticket.assignee.displayName))].join(", "))})`;
+  }
+
+  choices.push(`<label><input name="tickets" type="radio" value="new"><span>Create new tickets and close ${escapeHtml(keys)} as discarded${owners}</span></label>`);
+
+  document.getElementById("ticket-choices").innerHTML = choices.join("");
+
+  if (previous) {
+    const input = document.querySelector(`input[name=tickets][value="${CSS.escape(previous)}"]`);
+
+    if (input) {
+      input.checked = true;
+    }
+  }
+}
+
+function othersTickets() {
+  const me = appConfig.account?.accountId;
+
+  return openTickets.filter(ticket => ticket.assignee.accountId && ticket.assignee.accountId !== me);
+}
+
+function selectedTicketsChoice() {
+  const value = document.querySelector("input[name=tickets]:checked")?.value;
+
+  if (!value) {
+    return null;
+  }
+
+  if (value === "new") {
+    return {action: "new"};
+  }
+
+  return {action: "reuse", key: value.slice("reuse:".length)};
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({
+    "\"": "&quot;", "&": "&amp;", "'": "&#39;", "<": "&lt;", ">": "&gt;"
+  })[character]);
+}
+
+function formatDuration(start, end) {
+  if (!start) {
+    return "";
+  }
+
+  const seconds = Math.round((end || Date.now() / 1000) - start);
+  const minutes = Math.floor(seconds / 60);
+
+  if (minutes) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+
+  return `${seconds}s`;
+}
+
+function jiraLink(key) {
+  return `${escapeHtml(appConfig.jiraUrl)}/browse/${escapeHtml(key)}`;
+}
+
+function listEnvironments(environments) {
+  const names = appConfig.environments.filter(environment => environments.includes(environment)).map(
+    environment => environment.toUpperCase());
+
+  if (names.length === 1) {
+    return names[0];
+  }
+
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+function releaseSummary(environments) {
+  let plural = "";
+
+  if (environments.length > 1) {
+    plural = "s";
+  }
+
+  return appConfig.title.replaceAll("{environments}", listEnvironments(environments)).replaceAll("{plural}", plural);
+}
+
+function selectedEnvironment() {
+  return document.querySelector("input[name=environment]:checked")?.value;
+}
+
+function selectedReleaseEnvironments() {
+  return [...document.querySelectorAll("input[name=release]:checked")].map(input => input.value);
+}
+
+function updateForm() {
+  const environment = selectedEnvironment();
+
+  faroHint.innerHTML = `Builds for <code>${escapeHtml(appConfig.faroBuildEnvironments[environment])}</code> and deploys to <code>${escapeHtml(environment)}</code>.`;
+
+  const releaseEnvironments = selectedReleaseEnvironments();
+
+  if (releaseEnvironments.length) {
+    let production = ` No PR to <code>${escapeHtml(appConfig.productionBranch)}</code> is needed for these environments.`;
+
+    if (needsProduction(releaseEnvironments)) {
+      production = ` Then cherry-picks the merged commit into a PR to <code>${escapeHtml(appConfig.productionBranch)}</code> and waits for that merge too.`;
+    }
+
+    releaseHint.innerHTML = `Creates the Jira Task and Technical Task <strong>${escapeHtml(releaseSummary(releaseEnvironments))}</strong>, moves both to In Progress, opens a charts PR with the new tag suffix, and waits for it to be merged.${production}`;
+  }
+  else {
+    releaseHint.textContent = "Pick environments to create the Jira tickets and the charts PR. None picked skips the release.";
+  }
+
+  tagSuffixInput.disabled = Boolean(asahBranchInput.value.trim()) || !releaseEnvironments.length;
+
+  if (releaseEnvironments.length && !ticketsLoaded) {
+    loadOpenTickets();
+  }
+
+  document.getElementById("tickets-field").hidden = !openTickets.length || !releaseEnvironments.length;
+
+  const prdRelease = isPrdRelease(environment, faroBranchInput.value.trim(), releaseEnvironments);
+  const tags = releaseTags(asahBranchInput.value.trim(), faroBranchInput.value.trim(), versionInput.value.trim() || "X.Y.Z");
+
+  versionInput.disabled = !prdRelease;
+
+  if (!prdRelease) {
+    versionHint.textContent = `Tags are only created for ${appConfig.prdEnvironment.toUpperCase()} releases (Asah released to ${appConfig.prdEnvironment.toUpperCase()} or Faro deployed to ${appConfig.prdEnvironment}). Otherwise, you decide at the end whether to close the Jira tickets.`;
+  }
+  else if (tags.length) {
+    versionHint.innerHTML = `At the end of the run, creates ${tags.map(tag => `<code>${escapeHtml(tag)}</code>`).join(" and ")} on the exact commits that were built. Leave empty to skip.`;
+  }
+  else {
+    versionHint.textContent = "Enter an Asah or Faro branch to tag the commits they build. Leave empty to skip.";
+  }
+}
+
+function isPrdRelease(environment, faroBranch, releaseEnvironments) {
+  return releaseEnvironments.includes(appConfig.prdEnvironment) || (Boolean(faroBranch) && environment === appConfig.prdEnvironment);
+}
+
+function needsProduction(releaseEnvironments) {
+  return releaseEnvironments.some(environment => appConfig.productionEnvironments.includes(environment));
+}
+
+function releaseTags(asahBranch, faroBranch, version) {
+  const tags = [];
+
+  if (asahBranch) {
+    tags.push(`${appConfig.asahTagFormat.replaceAll("{version}", version)} (Asah)`);
+  }
+
+  if (faroBranch) {
+    tags.push(`${appConfig.faroTagFormat.replaceAll("{version}", version)} (Faro)`);
+  }
+
+  return tags;
+}
+
+function currentStageName(run) {
+  const names = Object.keys(STAGE_LABELS);
+
+  // The step to show is the one in progress; once nothing is in progress, it
+  // is the step that ended the run (failed, aborted or the last one done).
+
+  const active = names.find(name => ["queued", "running"].includes(run.stages[name].status));
+
+  if (active) {
+    return active;
+  }
+
+  const ended = names.find(name => ["aborted", "failed"].includes(run.stages[name].status));
+
+  if (ended) {
+    return ended;
+  }
+
+  const done = names.filter(name => stageRan(run.stages[name]));
+
+  if (done.length) {
+    return done[done.length - 1];
+  }
+
+  return names.find(name => run.stages[name].status === "pending") || names[0];
+}
+
+function stageRan(stage) {
+
+  // A step skipped by a decision (e.g. keeping the tickets open) still ran
+  // and logged what it did, unlike a step the run never needed.
+
+  return stage.status === "success" || (stage.status === "skipped" && Boolean(stage.log));
+}
+
+function renderStages(run) {
+  const current = currentStageName(run);
+  const planned = Object.keys(STAGE_LABELS).filter(
+    name => run.stages[name].status !== "skipped" || stageRan(run.stages[name]) || name === current);
+  const expanded = expandedRuns.has(run.id);
+
+  let names = [current];
+  let toggle = "Show all steps";
+
+  if (expanded) {
+    names = Object.keys(STAGE_LABELS);
+    toggle = "Show only the current step";
+  }
+
+  return `<div class="steps-bar">
+      <span>Step ${planned.indexOf(current) + 1} of ${planned.length}</span>
+      <button class="link-button" data-expand-steps="${run.id}" type="button">${toggle}</button>
+    </div>
+    <div class="stages">${names.map(name => renderStage(run, name)).join("")}</div>`;
+}
+
+function renderStage(run, name) {
+  const stage = run.stages[name];
+  const key = `${run.id}-${name}`;
+  const details = [];
+
+  if (stage.number) {
+    details.push(`<a href="${escapeHtml(stage.url)}" rel="noopener" target="_blank">${escapeHtml(stage.job)} #${stage.number}</a>`);
+  }
+
+  for (const link of stage.links) {
+    details.push(`<a href="${escapeHtml(link.url)}" rel="noopener" target="_blank">${escapeHtml(link.label)}</a>`);
+  }
+
+  if (stage.startedAt) {
+    details.push(formatDuration(stage.startedAt, stage.finishedAt));
+  }
+
+  if ((stage.status === "queued" || stage.status === "running") && stage.why) {
+    details.push(escapeHtml(stage.why));
+  }
+
+  let action = "";
+
+  if (name === "rollout" && stage.status === "running" && !run.rolloutConfirmed) {
+    action = `<div style="margin-top:8px"><button data-confirm-rollout="${run.id}" type="button">Confirm rollout</button></div>`;
+  }
+
+  if (name === "closeTickets" && stage.status === "running" && !run.prdRelease && !run.ticketsDecision) {
+    action = `<div style="display:flex;gap:8px;margin-top:8px"><button data-tickets="close-tickets" data-run="${run.id}" type="button">Close tickets</button><button class="secondary" data-tickets="keep-tickets" data-run="${run.id}" type="button">Keep open</button></div>`;
+  }
+
+  let log = "";
+
+  if (stage.log) {
+    log = `<details data-key="${key}"${openLogs.has(key) ? " open" : ""}><summary>Output (tail)</summary><pre>${escapeHtml(stage.log)}</pre></details>`;
+  }
+
+  return `<div class="stage s-${stage.status}">
+    <div class="stage-head" data-expand-steps="${run.id}" title="Show or hide all steps">
+      <span class="dot"></span>
+      <span class="stage-name">${STAGE_LABELS[name]}</span>
+      <span class="badge">${stage.status}</span>
+      <span class="stage-detail">${details.join(" · ")}</span>
+    </div>
+    ${action}
+    ${log}
+  </div>`;
+}
+
+function renderRun(run) {
+  let cancel = "";
+
+  if (run.status === "running" && !run.cancelRequested) {
+    cancel = `<button class="secondary" data-cancel="${run.id}" type="button">Cancel</button>`;
+  }
+
+  let images = "";
+
+  const tickets = [];
+
+  if (run.jiraTask) {
+    tickets.push(`<a href="${jiraLink(run.jiraTask)}" rel="noopener" target="_blank">${escapeHtml(run.jiraTask)}</a> (Task)`);
+  }
+
+  if (run.jiraTechnicalTask) {
+    tickets.push(`<a href="${jiraLink(run.jiraTechnicalTask)}" rel="noopener" target="_blank">${escapeHtml(run.jiraTechnicalTask)}</a> (Technical Task)`);
+  }
+
+  if (tickets.length) {
+    images += `<div class="tickets">Jira: ${tickets.join(" · ")}</div>`;
+  }
+
+  if (run.asahImages.length) {
+    images += `<details class="image"><summary>Asah images (${run.asahImages.length})</summary>${run.asahImages.map(image => `<div>${escapeHtml(image)}</div>`).join("")}</details>`;
+  }
+
+  if (run.tagSuffix && run.releaseEnvironments.length) {
+    images += `<div class="image">Asah tag suffix: ${escapeHtml(run.tagSuffix)}</div>`;
+  }
+
+  if (run.faroImage) {
+    images += `<div class="image">Faro image: ${escapeHtml(run.faroImage)}</div>`;
+  }
+
+  let error = "";
+
+  if (run.error) {
+    error = `<div class="error">${escapeHtml(run.error)}</div>`;
+  }
+
+  const titleParts = [];
+
+  if (run.asahBranch) {
+    titleParts.push(`Asah ${escapeHtml(run.asahBranch)}`);
+  }
+
+  if (run.releaseEnvironments.length) {
+    titleParts.push(`release ${escapeHtml(listEnvironments(run.releaseEnvironments))}`);
+  }
+
+  if (run.faroBranch) {
+    titleParts.push(`Faro ${escapeHtml(run.faroBranch)} → ${escapeHtml(run.environment)}`);
+  }
+
+  const created = new Date(run.createdAt * 1000).toLocaleString();
+
+  let status = run.status;
+
+  if (run.cancelRequested && run.status === "running") {
+    status = "cancelling";
+  }
+
+  return `<article class="card">
+    <div class="run-head">
+      <div>
+        <div class="run-title">${titleParts.join(" · ")}</div>
+        <div class="run-meta">Started ${escapeHtml(created)}</div>
+      </div>
+      <div class="s-${run.status}" style="display:flex;gap:8px;align-items:center">
+        <span class="badge">${status}</span>
+        ${cancel}
+      </div>
+    </div>
+    ${images}
+    ${error}
+    ${renderStages(run)}
+  </article>`;
+}
+
+async function refreshRuns() {
+  try {
+    const response = await fetch("/api/runs");
+    const json = await response.text();
+
+    if (json === lastRunsJson) {
+      return;
+    }
+
+    lastRunsJson = json;
+
+    const runs = JSON.parse(json);
+
+    if (!runs.length) {
+      return;
+    }
+
+    // Runs come newest first: the newest one stays on the Release tab and
+    // the earlier ones go to History.
+
+    const [current, ...previous] = runs;
+
+    let title = "Last run";
+
+    if (current.status === "running") {
+      title = "Current run";
+    }
+
+    document.getElementById("current-title").textContent = title;
+    document.getElementById("current-run").innerHTML = renderRun(current);
+
+    let history = `<p class="empty">No previous runs.</p>`;
+
+    if (previous.length) {
+      history = previous.map(renderRun).join("");
+    }
+
+    document.getElementById("history-runs").innerHTML = history;
+
+    let count = "";
+
+    if (previous.length) {
+      count = `(${previous.length})`;
+    }
+
+    document.getElementById("history-count").textContent = count;
+
+    for (const pre of runsContainer.querySelectorAll("details[open] pre")) {
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+  catch (error) {
+    console.error(error);
+  }
+}
+
+async function loadBranches() {
+  try {
+    const response = await fetch("/api/branches");
+
+    if (!response.ok) {
+      return;
+    }
+
+    const branches = await response.json();
+
+    for (const project of ["asah", "faro"]) {
+      document.getElementById(`${project}-branches`).innerHTML = branches[project].map(
+        branch => `<option value="${escapeHtml(branch)}">`).join("");
+    }
+  }
+  catch (error) {
+    console.error(error);
+  }
+}
+
+document.addEventListener("toggle", event => {
+  const key = event.target.dataset?.key;
+
+  if (!key) {
+    return;
+  }
+
+  if (event.target.open) {
+    openLogs.add(key);
+
+    const pre = event.target.querySelector("pre");
+
+    pre.scrollTop = pre.scrollHeight;
+  }
+  else {
+    openLogs.delete(key);
+  }
+}, true);
+
+document.getElementById("form").addEventListener("input", updateForm);
+
+runsContainer.addEventListener("click", async event => {
+
+  // Links and buttons inside a step row keep their own behavior; a click
+  // anywhere else on the row toggles the full list of steps.
+
+  const expander = event.target.closest("[data-expand-steps]");
+
+  if (expander && (expander === event.target || !event.target.closest("a, button, summary"))) {
+    const id = expander.dataset.expandSteps;
+
+    if (expandedRuns.has(id)) {
+      expandedRuns.delete(id);
+    }
+    else {
+      expandedRuns.add(id);
+    }
+
+    lastRunsJson = "";
+
+    refreshRuns();
+
+    return;
+  }
+
+  const ticketsAction = event.target.dataset.tickets;
+
+  if (ticketsAction) {
+    let message = "Keep the Jira Task and Technical Task open?";
+
+    if (ticketsAction === "close-tickets") {
+      message = "Close the Jira Technical Task and Task as Completed?";
+    }
+
+    if (confirm(message)) {
+      await fetch(`/api/runs/${event.target.dataset.run}/${ticketsAction}`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+      refreshRuns();
+    }
+
+    return;
+  }
+
+  const rolloutId = event.target.dataset.confirmRollout;
+
+  if (rolloutId) {
+    if (confirm("Confirm that every released environment runs the new tag suffix and is Healthy in Argo CD?")) {
+      await fetch(`/api/runs/${rolloutId}/confirm-rollout`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+      refreshRuns();
+    }
+
+    return;
+  }
+
+  const id = event.target.dataset.cancel;
+
+  if (!id || !confirm("Cancel this run? The current step is stopped and the remaining steps are skipped.")) {
+    return;
+  }
+
+  await fetch(`/api/runs/${id}/cancel`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+  refreshRuns();
+});
+
+document.getElementById("form").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const asahBranch = asahBranchInput.value.trim();
+  const environment = selectedEnvironment();
+  const faroBranch = faroBranchInput.value.trim();
+  const releaseEnvironments = selectedReleaseEnvironments();
+  const tagSuffix = tagSuffixInput.value.trim();
+  const prdRelease = isPrdRelease(environment, faroBranch, releaseEnvironments);
+
+  let version = "";
+
+  if (prdRelease) {
+    version = versionInput.value.trim();
+  }
+
+  const ticketsChoice = selectedTicketsChoice();
+
+  if (releaseEnvironments.length && openTickets.length && !ticketsChoice) {
+    formError.textContent = "Choose whether to reuse the open release ticket or create new ones.";
+
+    return;
+  }
+
+  const steps = [];
+
+  if (releaseEnvironments.length && ticketsChoice?.action === "reuse") {
+    steps.push(`• Reuse Jira ticket ${ticketsChoice.key} instead of creating new ones`);
+  }
+  else if (releaseEnvironments.length && ticketsChoice?.action === "new") {
+    steps.push(`• Close ${openTickets.map(ticket => ticket.key).join(", ")} as discarded`);
+
+    const others = othersTickets();
+
+    if (others.length) {
+      steps.push(`  ⚠ ${others.map(ticket => `${ticket.key} belongs to ${ticket.assignee.displayName}`).join(", ")}`);
+    }
+  }
+
+  if (asahBranch) {
+    steps.push(`• Build Asah ${asahBranch}`);
+  }
+
+  if (releaseEnvironments.length) {
+    steps.push(`• Create Jira tickets "${releaseSummary(releaseEnvironments)}" and open a charts PR setting the tag suffix to ${asahBranch ? "the new build's suffix" : tagSuffix}, then wait for its merge`);
+
+    if (needsProduction(releaseEnvironments)) {
+      steps.push(`• Cherry-pick the merged commit into a charts PR to ${appConfig.productionBranch}, then wait for its merge`);
+    }
+
+    steps.push("• Wait for you to confirm the rollout in Argo CD");
+  }
+
+  if (faroBranch) {
+    steps.push(`• Build Faro ${faroBranch} for ${appConfig.faroBuildEnvironments[environment]} and deploy it to ${environment}`);
+  }
+
+  if (version) {
+    steps.push(`• Tag the built commits as ${releaseTags(asahBranch, faroBranch, version).join(" and ")}`);
+  }
+
+  if (releaseEnvironments.length && prdRelease) {
+    steps.push("• Close the Jira Technical Task and Task as completed");
+  }
+  else if (releaseEnvironments.length) {
+    steps.push("• Ask you whether to close the Jira tickets");
+  }
+
+  if (steps.length && !confirm(`This will:\n\n${steps.join("\n")}\n\nContinue?`)) {
+    return;
+  }
+
+  formError.textContent = "";
+  submitButton.disabled = true;
+
+  try {
+    const response = await fetch("/api/runs", {
+      body: JSON.stringify({asahBranch, environment, faroBranch, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
+      headers: {"Content-Type": "application/json"},
+      method: "POST"
+    });
+
+    if (!response.ok) {
+      const body = await response.json();
+
+      formError.textContent = body.error || `Request failed (${response.status})`;
+    }
+
+    await refreshRuns();
+
+    // The tickets just chosen are now used (or closed) by the new run.
+
+    await loadOpenTickets();
+  }
+  catch (error) {
+    formError.textContent = error.message;
+  }
+  finally {
+    submitButton.disabled = setupBlocked;
+  }
+});
+
+function showTab(name) {
+  for (const tab of document.querySelectorAll(".tabs .tab")) {
+    tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+  }
+
+  document.getElementById("history-view").hidden = name !== "history";
+  document.getElementById("release-view").hidden = name !== "release";
+
+  try {
+    localStorage.setItem("ldp-releaser-tab", name);
+  }
+  catch (error) {
+    console.error(error);
+  }
+}
+
+for (const tab of document.querySelectorAll(".tabs .tab")) {
+  tab.addEventListener("click", () => showTab(tab.dataset.tab));
+}
+
+try {
+  showTab(localStorage.getItem("ldp-releaser-tab") || "release");
+}
+catch (error) {
+  showTab("release");
+}
+
+function renderChoices() {
+  document.getElementById("release-choices").innerHTML = appConfig.environments.map(
+    environment => `<label><input name="release" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
+
+  document.getElementById("environment-choices").innerHTML = appConfig.faroEnvironments.map(
+    (environment, index) => `<label><input${index === 0 ? " checked" : ""} name="environment" type="radio" value="${escapeHtml(environment)}">${escapeHtml(environment)}</label>`).join("");
+}
+
+async function loadHealth(refresh) {
+  try {
+    let url = "/api/health";
+
+    if (refresh) {
+      url += "?refresh=1";
+    }
+
+    const checks = await (await fetch(url)).json();
+    const problems = checks.filter(check => !check.ok);
+
+    setupBlocked = problems.some(check => check.required);
+
+    document.getElementById("health").hidden = !problems.length;
+    document.getElementById("health-problems").innerHTML = problems.map(
+      check => `<li class="${check.required ? "required" : "optional"}"><strong>${escapeHtml(check.name)}:</strong> ${escapeHtml(check.problem)}</li>`).join("");
+
+    submitButton.disabled = setupBlocked;
+    submitButton.title = setupBlocked ? "Fix the setup problems above first" : "";
+  }
+  catch (error) {
+    console.error(error);
+  }
+}
+
+document.getElementById("health-refresh").addEventListener("click", () => loadHealth(true));
+
+async function start() {
+  appConfig = await (await fetch("/api/config")).json();
+
+  renderChoices();
+  updateForm();
+  loadHealth(false);
+  loadBranches();
+  refreshRuns();
+  setInterval(refreshRuns, 3000);
+}
+
+start();
+</script>
+</body>
+</html>

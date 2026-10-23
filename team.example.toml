@@ -1,0 +1,83 @@
+# LDP Releaser team settings: the shared setup every team member uses.
+#
+# This is a template with placeholder values. The real file is shared
+# privately (e.g. through 1Password) and saved by the first-run setup as
+# ~/.config/ldp-releaser/ldp-releaser.team.toml. Never commit the real one:
+# it describes internal systems and holds the Slack webhook.
+
+[jenkins]
+url = "https://ci.example.com"
+folder = "my-team"                                    # folder holding the jobs
+commit_pattern = 'REVISION=([0-9a-f]{40})'       # commit a build checked out, read from its log
+
+[asah]
+build_job = "build-asah"
+branch_parameter = "BRANCH"
+repository = "example-org/asah"                       # where the version tag is created
+image_pattern = 'docker push (registry.example.com/asah:\S+)'
+tag_suffix_pattern = '\d{8}-[0-9a-f]{7,40}'           # suffix shared by the build's images
+tag_format = "{version}"
+
+[faro]
+build_job = "build-faro"
+deploy_job = "deploy-faro"
+branch_parameter = "BRANCH"
+environment_parameter = "ENVIRONMENT"
+image_parameter = "IMAGE"
+repository = "example-org/faro"
+image_pattern = 'docker push (registry.example.com/faro:\S+)'
+tag_format = "faro-v{version}"
+
+# Deploy environment -> environment the Faro build job is given.
+[faro.build_environments]
+stg = "stg"
+int = "prd"
+prd = "prd"
+
+[charts]
+repository = "example-org/charts"
+develop_branch = "develop"
+production_branch = "production"
+tag_suffix_key = "tagSuffix"
+contributing_url = "https://github.com/example-org/charts/blob/develop/CONTRIBUTING.md"
+
+# Release environment -> values file holding the tag suffix, in release order.
+[charts.files]
+stg = "deploy/asah/stg.yaml"
+int = "deploy/asah/int.yaml"
+prd = "deploy/asah/prd.yaml"
+
+# Environments that also need the cherry-pick PR to the production branch.
+[charts.production]
+environments = ["int", "prd"]
+
+[jira]
+url = "https://example.atlassian.example"
+project = "PROJ"
+board_id = 1
+component = "Platform"
+task_type = "Task"
+technical_task_type = "Technical Task"
+title = "Release {environments} Environment{plural}"
+
+[jira.workflow]
+task_to_in_progress = ["Selected for Development", "In Progress"]
+technical_task_to_in_progress = ["In Progress"]
+closed_status = "Closed"
+completed_resolution = "Completed"
+discarded_resolution = "Discarded"
+
+[argocd]
+search = "asah"
+
+# Release environment -> Argo CD instance that deploys it.
+[argocd.urls]
+stg = "https://argocd.staging.example.com"
+int = "https://argocd.example.com"
+prd = "https://argocd.example.com"
+
+[release]
+prd_environment = "prd"     # a run touching it is a PRD release: tags + auto-close
+
+[slack]
+webhook_url = ""            # optional: Slack workflow called when a charts PR opens
