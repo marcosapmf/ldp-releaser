@@ -160,6 +160,8 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .health li.required { color: var(--fail); }
 .health li.optional { color: var(--muted); }
 .code-form { display: flex; gap: 8px; margin-top: 10px; }
+.coming-soon { text-align: center; padding: 40px 20px; }
+.coming-soon .hint { margin-top: 8px; }
 .code-form input { flex: 1; }
 .ticket-choices { display: grid; gap: 6px; }
 .ticket-choices label { align-items: baseline; display: flex; font-weight: 400; gap: 8px; margin: 0; }
@@ -215,6 +217,7 @@ pre {
   <nav class="tabs" role="tablist">
     <button aria-selected="true" class="tab" data-tab="release" role="tab" type="button">Release</button>
     <button aria-selected="false" class="tab" data-tab="composer" hidden id="composer-tab" role="tab" type="button">Composer</button>
+    <button aria-selected="false" class="tab" data-tab="dataflow" role="tab" type="button">Dataflow</button>
     <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
   </nav>
 
@@ -322,6 +325,13 @@ pre {
 
   <h2 id="composer-title">Last Composer run</h2>
   <div id="composer-run"><p class="empty">No Composer runs yet.</p></div>
+  </div>
+
+  <div hidden id="dataflow-view">
+  <section class="card coming-soon">
+    <strong>Dataflow releases are coming soon.</strong>
+    <p class="hint">This tab will release the Dataflow jobs. Nothing runs from here yet.</p>
+  </section>
   </div>
 
   <div hidden id="history-view">
@@ -1050,6 +1060,7 @@ function showTab(name) {
   }
 
   document.getElementById("composer-view").hidden = name !== "composer";
+  document.getElementById("dataflow-view").hidden = name !== "dataflow";
   document.getElementById("history-view").hidden = name !== "history";
   document.getElementById("release-view").hidden = name !== "release";
 
