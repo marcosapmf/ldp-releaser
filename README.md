@@ -58,6 +58,21 @@ See [`team.example.toml`](team.example.toml) and
 [`config.example.toml`](config.example.toml) for every setting, with
 placeholder values.
 
+### Updating the team settings
+
+Whoever owns the team file edits their local copy, then replaces the shared
+one. With the 1Password CLI:
+
+```sh
+op document edit "<item>" ~/.config/ldp-releaser/ldp-releaser.team.toml --vault "<vault>"
+```
+
+Then tell the team to run `./ldp-releaser --setup` and answer yes to
+replacing the team settings, so everyone fetches the new version. If a
+newer version of LDP Releaser needs a setting the file does not have yet,
+the next start lists the missing settings and asks for an updated file: add
+them to the shared file the same way, then fetch it again.
+
 Personal settings can also come from environment variables, which take
 precedence over the file: `LDP_JENKINS_USER`, `LDP_JENKINS_TOKEN`,
 `LDP_JIRA_EMAIL`, `LDP_JIRA_TOKEN` (`JIRA_API_USER` and `JIRA_API_TOKEN` are
