@@ -81,9 +81,10 @@ def prepare_resume(run):
         else:
             interrupted = next(
                 (
-                    name for name in release.STAGE_NAMES
+                    name for name in run.get("stageOrder", release.STAGE_NAMES)
                     if run["stages"][name]["status"] in ("queued", "running") and
-                    name not in release.RESUMABLE_STAGES
+                    name not in release.RESUMABLE_STAGES and
+                    run.get("kind") != "composer"
                 ),
                 None)
 
@@ -111,6 +112,7 @@ def prepare_resume(run):
         for stage in run["stages"].values():
             if stage["status"] in ("queued", "running"):
                 stage["log"] += "[LDP Releaser] Resumed after a restart\n"
+                stage["needsGcloudLogin"] = False
 
     return True
 

@@ -83,7 +83,7 @@ them to the shared file the same way, then fetch it again.
 Personal settings can also come from environment variables, which take
 precedence over the file: `LDP_JENKINS_USER`, `LDP_JENKINS_TOKEN`,
 `LDP_JIRA_EMAIL`, `LDP_JIRA_TOKEN` (`JIRA_API_USER` and `JIRA_API_TOKEN` are
-used as a fallback), `LDP_CHARTS_CHECKOUT`, `LDP_PORT` and
+used as a fallback), `LDP_CHARTS_CHECKOUT`, `LDP_ASAH_CHECKOUT`, `LDP_PORT` and
 `LDP_SLACK_WEBHOOK_URL`.
 
 ## What a run does
@@ -119,6 +119,25 @@ the next start resumes unfinished runs: Jenkins builds are re-attached and
 waits for merges, the rollout or a decision start again. A run that stopped
 while changing Jira, git or GitHub is marked as failed instead, so nothing
 is done twice; start a new run and reuse its tickets.
+
+## Composer DAGs
+
+If the team file has the Composer setup (`asah.composer_directory`,
+`asah.composer_script` and `gcloud.environments`), the **Composer** tab
+uploads the DAGs of an Asah branch, tag or commit to the Composer
+environments of the chosen release environments. It is separate from
+releases and only runs when you start it.
+
+1. It checks that your gcloud login still works. If it has expired, the
+   page shows **Log in to gcloud**: it starts `gcloud auth login`, which
+   opens the sign-in page in your browser (or shows the link and asks for
+   the verification code), and the upload continues once you are signed in.
+2. It fetches that version from the team's Asah repository into a temporary
+   worktree of your Asah clone, so your own branch and changes are untouched.
+3. For each gcloud configuration of the chosen environments, it runs the
+   upload script with `LCP_PROJECT_ID`, `PROJECT_ID` and `REGION` taken from
+   the team file, never from your active gcloud configuration. If the login
+   expires during an upload, it waits for a new login and uploads again.
 
 The page has a setup panel that checks Jenkins, Jira, GitHub, the charts
 clone, git, Python and Slack, and keeps **Run** disabled while something

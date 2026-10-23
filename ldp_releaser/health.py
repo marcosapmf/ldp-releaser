@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.error
 
-from . import gcloud
+from . import composer, gcloud
 
 CACHE_SECONDS = 60
 
@@ -110,6 +110,11 @@ def checks(jenkins, jira, settings, refresh=False):
         result("Python", check_python(), required=True),
         result("Slack", check_slack(settings), required=False),
     ]
+
+    if composer.composer_enabled(settings):
+        results.append(
+            result("Asah clone", "; ".join(composer.problems(settings)) or None,
+                   required=False))
 
     if gcloud.configured(settings):
         results.append(

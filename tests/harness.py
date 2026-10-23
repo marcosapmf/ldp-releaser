@@ -26,6 +26,8 @@ commit_pattern = 'REVISION=([0-9a-f]{{40}})'
 
 [asah]
 build_job = "build-asah"
+composer_directory = "composer"
+composer_script = "scripts/upload_dag.sh"
 branch_parameter = "BRANCH"
 repository = "example-org/asah"
 image_pattern = 'docker push (registry.example.com/asah:\\S+)'
@@ -95,7 +97,7 @@ webhook_url = "{url}/slack"
 [gcloud.configurations]
 team-stg = {{ project = "example-staging", region = "us-west1", zone = "us-west1-a" }}
 team-prd-1 = {{ project = "example-prd-1", region = "europe-west1" }}
-team-prd-2 = {{ project = "example-prd-2" }}
+team-prd-2 = {{ project = "example-prd-2", region = "us-east1", lcp_project_id = "second" }}
 
 [gcloud.environments]
 stg = ["team-stg"]
@@ -103,6 +105,9 @@ prd = ["team-prd-1", "team-prd-2"]
 """
 
 PERSONAL = """
+[asah]
+checkout = "{asah_checkout}"
+
 [jenkins]
 user = "tester"
 token = "secret-token"
@@ -116,6 +121,28 @@ checkout = "{checkout}"
 
 [server]
 port = {port}
+"""
+
+
+UPLOAD_SCRIPT = """#!/bin/bash
+if [ -z "$LCP_PROJECT_ID" ] || [ -z "$PROJECT_ID" ] || [ -z "$REGION" ]
+then
+    echo "LCP_PROJECT_ID, PROJECT_ID and REGION are required"
+    exit 1
+fi
+
+cd src/main/python
+
+for file in *
+do
+    gcloud composer environments storage dags import --environment "ac-$LCP_PROJECT_ID" \\
+        --location "$REGION" --project "$PROJECT_ID" --source "$file" || exit 1
+done
+
+cd - > /dev/null
+
+gcloud composer environments storage dags import --environment "ac-$LCP_PROJECT_ID" \\
+    --location "$REGION" --project "$PROJECT_ID" --source src/main/resources/ || exit 1
 """
 
 
@@ -145,6 +172,7 @@ class AppTestCase(unittest.TestCase):
         self.process = None
 
         self.create_charts()
+        self.create_asah()
         self.write_settings()
         self.before_start()
         self.start_app()
@@ -175,6 +203,43 @@ class AppTestCase(unittest.TestCase):
                 return response.status, json.loads(response.read() or b"null")
         except urllib.error.HTTPError as exception:
             return exception.code, json.loads(exception.read() or b"null")
+
+    def create_asah(self):
+
+        # The team's Asah repository with a Composer folder, and a personal
+        # clone on another branch with uncommitted work, which must stay as
+        # it is.
+
+        self.asah_origin = self.temp / "example-org" / "asah.git"
+        self.asah_checkout = self.temp / "asah"
+
+        self.asah_origin.parent.mkdir(parents=True, exist_ok=True)
+
+        git("init", "--bare", "-b", "main", str(self.asah_origin))
+        git("clone", str(self.asah_origin), str(self.asah_checkout))
+        git("checkout", "-b", "main", cwd=self.asah_checkout)
+
+        composer = self.asah_checkout / "composer"
+
+        for path, content in {
+                "scripts/upload_dag.sh": UPLOAD_SCRIPT,
+                "src/main/python/a_dag.py": "# DAG a\n",
+                "src/main/python/b_dag.py": "# DAG b\n",
+                "src/main/resources/query.sql": "select 1;\n"}.items():
+
+            (composer / path).parent.mkdir(parents=True, exist_ok=True)
+            (composer / path).write_text(content)
+
+        git("add", "-A", cwd=self.asah_checkout)
+        git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "-m", "DAGs", cwd=self.asah_checkout)
+        git("push", "origin", "main", cwd=self.asah_checkout)
+        git("remote", "rename", "origin", "upstream", cwd=self.asah_checkout)
+        git("remote", "add", "origin", "git@github.example:someone/asah-fork.git",
+            cwd=self.asah_checkout)
+        git("checkout", "-b", "my-feature", cwd=self.asah_checkout)
+
+        (self.asah_checkout / "work-in-progress.txt").write_text("not committed\n")
 
     def create_charts(self):
         self.origin.parent.mkdir(parents=True)
@@ -212,6 +277,7 @@ class AppTestCase(unittest.TestCase):
             GIT_AUTHOR_NAME="Test",
             GIT_COMMITTER_EMAIL="test@example.com",
             GIT_COMMITTER_NAME="Test",
+            LDP_LOGIN_POLL_SECONDS="0.2",
             LDP_MERGE_POLL_SECONDS="0.2",
             LDP_POLL_SECONDS="0.05",
             PATH=f"{ROOT / 'tests' / 'bin'}{os.pathsep}{os.environ['PATH']}",
@@ -284,7 +350,9 @@ class AppTestCase(unittest.TestCase):
             if on_tick:
                 on_tick(run)
 
-            if run["stages"]["rollout"]["status"] == "running" and not run["rolloutConfirmed"]:
+            rollout = run["stages"].get("rollout")
+
+            if rollout and rollout["status"] == "running" and not run["rolloutConfirmed"]:
                 self.call(f"/api/runs/{run_id}/confirm-rollout", {})
 
             time.sleep(0.1)
@@ -297,7 +365,8 @@ class AppTestCase(unittest.TestCase):
 
         (directory / "ldp-releaser.team.toml").write_text(TEAM.format(url=self.fakes.url))
         (directory / "config.toml").write_text(
-            PERSONAL.format(checkout=self.checkout, port=self.port))
+            PERSONAL.format(
+                asah_checkout=self.asah_checkout, checkout=self.checkout, port=self.port))
 
         for path in directory.iterdir():
             path.chmod(0o600)

@@ -909,6 +909,9 @@ def open_release_tickets(jira):
             if run["finishedAt"] is not None:
                 continue
 
+            if run.get("kind") == "composer":
+                continue
+
             active_keys.add(run["jiraTask"])
             active_keys.update(ticket["key"] for ticket in run["discardTickets"])
 

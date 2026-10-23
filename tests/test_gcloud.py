@@ -67,8 +67,25 @@ class GcloudTest(AppTestCase):
 
         self.assertNotIn("team-prd-1", self.gcloud_state()["configurations"])
 
+    def test_expired_login_is_reported(self):
+        self.stop_app()
+
+        self.expired = True
+
+        self.start_app()
+
+        check = next(
+            check for check in self.call("/api/health?refresh=1")[1]
+            if check["name"] == "gcloud")
+
+        self.assertFalse(check["ok"])
+        self.assertIn("gcloud login has expired", check["problem"])
+
     def environment(self):
         environment = super().environment()
+
+        if getattr(self, "expired", False):
+            environment["FAKE_GCLOUD_EXPIRED"] = "1"
 
         if getattr(self, "forbidden", None):
             environment["FAKE_GCLOUD_FORBIDDEN_PROJECTS"] = self.forbidden

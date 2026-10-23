@@ -9,7 +9,7 @@ import tomllib
 import urllib.error
 from pathlib import Path
 
-from . import config, gcloud, health
+from . import composer, config, gcloud, health
 from .clients import Jenkins, Jira
 
 
@@ -48,6 +48,38 @@ def ask(prompt, current=None, secret=False):
         return current
 
     return answer
+
+
+def ask_asah(personal, settings, force):
+
+    # Only the Composer flow uses the Asah clone, so it is asked only when
+    # the team settings have the Composer setup.
+
+    key = "asah.checkout"
+
+    if not composer.composer_enabled(settings) or not needs_answer(personal, key, force):
+        return
+
+    while True:
+        answer = ask(
+            "Path to your clone of " + settings["asah.repository"],
+            config.get_value(personal, key))
+
+        path = Path(answer).expanduser()
+
+        if not (path / ".git").exists():
+            print(f"  {path} is not a git clone, try again")
+
+            continue
+
+        if composer.matching_remote(str(path), settings["asah.repository"]) is None:
+            print(
+                f"  No remote points to {settings['asah.repository']}; versions "
+                f"will be fetched from GitHub over SSH")
+
+        keep(personal, key, answer)
+
+        return
 
 
 def ask_charts(personal, settings, force):
@@ -290,6 +322,7 @@ def ensure_configured(force=False):
     ask_jenkins(personal, settings, force)
     ask_jira(personal, settings, force)
     ask_charts(personal, settings, force)
+    ask_asah(personal, settings, force)
     ask_port(personal, force)
 
     config.write_personal(personal)

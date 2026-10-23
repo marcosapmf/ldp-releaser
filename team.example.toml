@@ -12,6 +12,8 @@ commit_pattern = 'REVISION=([0-9a-f]{40})'       # commit a build checked out, r
 
 [asah]
 build_job = "build-asah"
+composer_directory = "composer"                       # optional: enables the Composer tab
+composer_script = "scripts/upload_dag.sh"             # run from composer_directory with LCP_PROJECT_ID, PROJECT_ID, REGION
 branch_parameter = "BRANCH"
 repository = "example-org/asah"                       # where the version tag is created
 image_pattern = 'docker push (registry.example.com/asah:\S+)'
@@ -83,10 +85,12 @@ prd_environment = "prd"     # a run touching it is a PRD release: tags + auto-cl
 webhook_url = ""            # optional: Slack workflow called when a charts PR opens
 
 # Optional: gcloud configurations created on each person's machine with their
-# own gcloud login. Existing configurations are never changed.
+# own gcloud login. Existing configurations are never changed. The Composer
+# tab passes the configuration name as LCP_PROJECT_ID unless lcp_project_id
+# says otherwise.
 [gcloud.configurations]
 staging = { project = "example-staging", region = "us-west1", zone = "us-west1-a" }
-prd-eu = { project = "example-prd-eu", region = "europe-west1", zone = "europe-west1-b" }
+prd-eu = { project = "example-prd-eu", region = "europe-west1", zone = "europe-west1-b", lcp_project_id = "eu" }
 prd-us = { project = "example-prd-us", region = "us-central1", zone = "us-central1-a" }
 
 # Release environment -> configurations it touches.

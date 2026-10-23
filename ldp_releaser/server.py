@@ -8,7 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import health, release
+from . import composer, gcloud, health, release
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 
@@ -16,6 +16,7 @@ INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 class Handler(BaseHTTPRequestHandler):
 
     account = None
+    gcloud_login = gcloud.Login()
     jenkins = None
     jira = None
     port = None
@@ -35,6 +36,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/api/config":
             return self._send_json(200, self._config())
+
+        if url.path == "/api/gcloud/login":
+            state = self.gcloud_login.state()
+
+            if "check" in urllib.parse.parse_qs(url.query):
+                state["problem"] = gcloud.login_problem()
+
+            return self._send_json(200, state)
 
         if url.path == "/api/health":
             refresh = "refresh" in urllib.parse.parse_qs(url.query)
@@ -78,6 +87,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/runs":
             return self._start_run()
 
+        if self.path == "/api/composer-runs":
+            return self._start_composer_run()
+
+        if self.path == "/api/gcloud/login":
+            return self._send_json(202, self.gcloud_login.start())
+
+        if self.path == "/api/gcloud/login/code":
+            payload = self._payload()
+
+            if not self.gcloud_login.send_code(str(payload.get("code", ""))):
+                return self._send_json(409, {"error": "No gcloud login is waiting for a code"})
+
+            return self._send_json(202, self.gcloud_login.state())
+
         match = re.fullmatch(
             r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets)",
             self.path)
@@ -111,6 +134,14 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "account": self.account,
             "asahTagFormat": settings["asah.tag_format"],
+            "composer": {
+                "enabled": composer.composer_enabled(settings),
+                "environments": {
+                    environment: settings["gcloud.environments"][environment]
+                    for environment in settings.environments()
+                    if environment in (settings["gcloud.environments"] or {})
+                },
+            },
             "environments": settings.environments(),
             "faroBuildEnvironments": settings["faro.build_environments"],
             "faroEnvironments": settings.faro_environments(),
@@ -171,9 +202,25 @@ class Handler(BaseHTTPRequestHandler):
     def _send_json(self, status, payload):
         self._send(status, json.dumps(payload).encode(), "application/json")
 
-    def _start_run(self):
+    def _payload(self):
         length = int(self.headers.get("Content-Length", 0))
-        payload = json.loads(self.rfile.read(length) or b"{}")
+
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def _start_composer_run(self):
+        try:
+            environments, ref = composer.validate(self._payload())
+        except ValueError as exception:
+            return self._send_json(400, {"error": str(exception)})
+
+        run = composer.create_run(environments, ref)
+
+        start_run(self.jenkins, self.jira, run)
+
+        return self._send_json(201, {"id": run["id"]})
+
+    def _start_run(self):
+        payload = self._payload()
 
         problems = [
             check["problem"]
@@ -229,5 +276,8 @@ def serve(account, jenkins, jira, settings, unfinished_runs):
 
 
 def start_run(jenkins, jira, run):
-    threading.Thread(
-        args=(jenkins, jira, run), daemon=True, target=release.execute).start()
+    if run.get("kind") == "composer":
+        threading.Thread(args=(run,), daemon=True, target=composer.execute).start()
+    else:
+        threading.Thread(
+            args=(jenkins, jira, run), daemon=True, target=release.execute).start()

@@ -5,7 +5,7 @@
 # Every value can also come from an environment variable:
 #   LDP_JENKINS_USER, LDP_JENKINS_TOKEN, LDP_JIRA_EMAIL, LDP_JIRA_TOKEN
 #   (JIRA_API_USER / JIRA_API_TOKEN are used as a fallback),
-#   LDP_CHARTS_CHECKOUT, LDP_PORT, LDP_SLACK_WEBHOOK_URL.
+#   LDP_CHARTS_CHECKOUT, LDP_ASAH_CHECKOUT, LDP_PORT, LDP_SLACK_WEBHOOK_URL.
 
 [jenkins]
 user = "your-jenkins-user-id"       # the <id> in https://<jenkins>/user/<id>/
@@ -17,6 +17,9 @@ token = "your-atlassian-api-token"  # https://id.atlassian.com/manage-profile/se
 
 [charts]
 checkout = "~/projects/charts"      # your clone of the charts repository
+
+[asah]
+checkout = "~/projects/asah"        # only for the Composer tab: your clone of the Asah repository
 
 [server]
 port = 8766

@@ -43,6 +43,8 @@ class SetupTest(AppTestCase):
             "tester@example.com", "secret-token",
             str(self.temp / "nowhere"),        # not a checkout
             str(self.checkout),
+            str(self.temp / "nowhere"),        # not a clone
+            str(self.asah_checkout),
             str(self.port),
         ]) + "\n"
 
@@ -85,6 +87,7 @@ class SetupTest(AppTestCase):
         self.assertIn("Jenkins rejected that user and token", output)
         self.assertIn("Jira: logged in as Test User", output)
         self.assertIn("is not a git checkout", output)
+        self.assertIn("is not a git clone", output)
         self.assertIn("running on", output)
         self.assertIn("team-stg: created for example-staging", output)
 
@@ -101,6 +104,7 @@ class SetupTest(AppTestCase):
         self.assertEqual("tester", personal["jenkins"]["user"])
         self.assertEqual("secret-token", personal["jenkins"]["token"])
         self.assertEqual(str(self.checkout), personal["charts"]["checkout"])
+        self.assertEqual(str(self.asah_checkout), personal["asah"]["checkout"])
 
 
 if __name__ == "__main__":

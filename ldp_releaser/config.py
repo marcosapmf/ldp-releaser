@@ -24,6 +24,7 @@ DEFAULT_PORT = 8766
 # Dotted key -> kind. Every key is required unless listed in OPTIONAL_KEYS.
 
 PERSONAL_SCHEMA = {
+    "asah.checkout": "path",
     "charts.checkout": "path",
     "jenkins.token": "secret",
     "jenkins.user": "str",
@@ -37,6 +38,8 @@ TEAM_SCHEMA = {
     "argocd.urls": "url_table",
     "asah.branch_parameter": "str",
     "asah.build_job": "str",
+    "asah.composer_directory": "str",
+    "asah.composer_script": "str",
     "asah.image_pattern": "pattern",
     "asah.repository": "repository",
     "asah.tag_format": "tag_format",
@@ -79,6 +82,7 @@ TEAM_SCHEMA = {
 }
 
 OPTIONAL_KEYS = {
+    "asah.checkout", "asah.composer_directory", "asah.composer_script",
     "gcloud.configurations", "gcloud.environments", "server.port",
     "slack.webhook_url",
 }
@@ -87,6 +91,7 @@ OPTIONAL_KEYS = {
 # JIRA_API_* names are only a fallback for people who already use them.
 
 ENVIRONMENT_OVERRIDES = {
+    "asah.checkout": ["LDP_ASAH_CHECKOUT"],
     "charts.checkout": ["LDP_CHARTS_CHECKOUT"],
     "jenkins.token": ["LDP_JENKINS_TOKEN"],
     "jenkins.user": ["LDP_JENKINS_USER"],
@@ -296,7 +301,7 @@ def validate_kind(kind, value):
 
                 return f"must give a project for {name}"
 
-            unknown = set(configuration) - {"project", "region", "zone"}
+            unknown = set(configuration) - {"lcp_project_id", "project", "region", "zone"}
 
             if unknown:
                 return f"has unknown keys for {name}: {', '.join(sorted(unknown))}"
@@ -381,6 +386,15 @@ def validate_team(team):
                 problems.append(
                     f"gcloud.environments.{environment} names unknown "
                     f"configurations: {', '.join(unknown)}")
+
+    composer_keys = [
+        key for key in ("asah.composer_directory", "asah.composer_script")
+        if get_value(team, key)
+    ]
+
+    if len(composer_keys) == 1:
+        problems.append(
+            "asah.composer_directory and asah.composer_script go together")
 
     prd_environment = get_value(team, "release.prd_environment")
 

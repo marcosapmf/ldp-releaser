@@ -36,6 +36,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -158,6 +159,8 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .health ul { margin: 10px 0 0; padding-left: 20px; }
 .health li.required { color: var(--fail); }
 .health li.optional { color: var(--muted); }
+.code-form { display: flex; gap: 8px; margin-top: 10px; }
+.code-form input { flex: 1; }
 .ticket-choices { display: grid; gap: 6px; }
 .ticket-choices label { align-items: baseline; display: flex; font-weight: 400; gap: 8px; margin: 0; }
 .stages { display: grid; gap: 10px; margin-top: 14px; }
@@ -211,8 +214,21 @@ pre {
 
   <nav class="tabs" role="tablist">
     <button aria-selected="true" class="tab" data-tab="release" role="tab" type="button">Release</button>
+    <button aria-selected="false" class="tab" data-tab="composer" hidden id="composer-tab" role="tab" type="button">Composer</button>
     <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
   </nav>
+
+  <section class="card health" hidden id="gcloud-login">
+    <div class="health-head">
+      <strong id="gcloud-login-message">Your gcloud login has expired.</strong>
+      <button id="gcloud-login-start" type="button">Log in to gcloud</button>
+    </div>
+    <div class="hint" id="gcloud-login-status"></div>
+    <form class="code-form" hidden id="gcloud-login-code-form">
+      <input autocomplete="off" id="gcloud-login-code" placeholder="Verification code from the browser" type="text">
+      <button type="submit">Send code</button>
+    </form>
+  </section>
 
   <div id="release-view">
   <section class="card health" hidden id="health">
@@ -283,6 +299,31 @@ pre {
   <div id="current-run"><p class="empty">No runs yet.</p></div>
   </div>
 
+  <div hidden id="composer-view">
+  <section class="card">
+    <form id="composer-form">
+      <fieldset>
+        <legend>Composer DAGs</legend>
+        <div>
+          <label>Environments</label>
+          <div class="choices" id="composer-environments"></div>
+          <div class="hint" id="composer-hint"></div>
+        </div>
+        <div>
+          <label for="composer-ref">Asah version</label>
+          <input id="composer-ref" list="asah-branches" autocomplete="off" placeholder="branch, tag or commit, e.g. release-1.2.x" type="text">
+          <div class="hint">The DAGs are taken from this version of the Asah repository, not from your own checkout.</div>
+        </div>
+      </fieldset>
+      <div><button id="composer-submit" type="submit">Upload DAGs</button></div>
+      <div class="form-error" id="composer-error"></div>
+    </form>
+  </section>
+
+  <h2 id="composer-title">Last Composer run</h2>
+  <div id="composer-run"><p class="empty">No Composer runs yet.</p></div>
+  </div>
+
   <div hidden id="history-view">
     <div id="history-runs"><p class="empty">No previous runs.</p></div>
   </div>
@@ -317,6 +358,10 @@ const versionHint = document.getElementById("version-hint");
 const versionInput = document.getElementById("version");
 
 let appConfig = null;
+let healthNeedsLogin = false;
+let loginState = {status: "idle"};
+let loginTimer = null;
+let runsNeedLogin = false;
 let lastRunsJson = "";
 let setupBlocked = false;
 let openTickets = [];
@@ -517,8 +562,16 @@ function releaseTags(asahBranch, faroBranch, version) {
   return tags;
 }
 
+function stageNames(run) {
+  return run.stageOrder || Object.keys(STAGE_LABELS);
+}
+
+function stageLabel(run, name) {
+  return run.stageLabels?.[name] || STAGE_LABELS[name];
+}
+
 function currentStageName(run) {
-  const names = Object.keys(STAGE_LABELS);
+  const names = stageNames(run);
 
   // The step to show is the one in progress; once nothing is in progress, it
   // is the step that ended the run (failed, aborted or the last one done).
@@ -554,7 +607,7 @@ function stageRan(stage) {
 
 function renderStages(run) {
   const current = currentStageName(run);
-  const planned = Object.keys(STAGE_LABELS).filter(
+  const planned = stageNames(run).filter(
     name => run.stages[name].status !== "skipped" || stageRan(run.stages[name]) || name === current);
   const expanded = expandedRuns.has(run.id);
 
@@ -562,7 +615,7 @@ function renderStages(run) {
   let toggle = "Show all steps";
 
   if (expanded) {
-    names = Object.keys(STAGE_LABELS);
+    names = stageNames(run);
     toggle = "Show only the current step";
   }
 
@@ -604,6 +657,10 @@ function renderStage(run, name) {
     action = `<div style="display:flex;gap:8px;margin-top:8px"><button data-tickets="close-tickets" data-run="${run.id}" type="button">Close tickets</button><button class="secondary" data-tickets="keep-tickets" data-run="${run.id}" type="button">Keep open</button></div>`;
   }
 
+  if (stage.needsGcloudLogin && stage.status === "running") {
+    action = `<div style="margin-top:8px"><button data-gcloud-login="1" type="button">Log in to gcloud</button></div>`;
+  }
+
   let log = "";
 
   if (stage.log) {
@@ -613,7 +670,7 @@ function renderStage(run, name) {
   return `<div class="stage s-${stage.status}">
     <div class="stage-head" data-expand-steps="${run.id}" title="Show or hide all steps">
       <span class="dot"></span>
-      <span class="stage-name">${STAGE_LABELS[name]}</span>
+      <span class="stage-name">${escapeHtml(stageLabel(run, name))}</span>
       <span class="badge">${stage.status}</span>
       <span class="stage-detail">${details.join(" · ")}</span>
     </div>
@@ -645,11 +702,15 @@ function renderRun(run) {
     images += `<div class="tickets">Jira: ${tickets.join(" · ")}</div>`;
   }
 
-  if (run.asahImages.length) {
+  if (run.kind === "composer" && run.commit) {
+    images += `<div class="image">Asah commit: ${escapeHtml(run.commit)}</div>`;
+  }
+
+  if (run.asahImages?.length) {
     images += `<details class="image"><summary>Asah images (${run.asahImages.length})</summary>${run.asahImages.map(image => `<div>${escapeHtml(image)}</div>`).join("")}</details>`;
   }
 
-  if (run.tagSuffix && run.releaseEnvironments.length) {
+  if (run.tagSuffix && run.releaseEnvironments?.length) {
     images += `<div class="image">Asah tag suffix: ${escapeHtml(run.tagSuffix)}</div>`;
   }
 
@@ -665,11 +726,15 @@ function renderRun(run) {
 
   const titleParts = [];
 
+  if (run.kind === "composer") {
+    titleParts.push(`Composer DAGs · ${escapeHtml(run.ref)} → ${escapeHtml(listEnvironments(run.environments))}`);
+  }
+
   if (run.asahBranch) {
     titleParts.push(`Asah ${escapeHtml(run.asahBranch)}`);
   }
 
-  if (run.releaseEnvironments.length) {
+  if (run.releaseEnvironments?.length) {
     titleParts.push(`release ${escapeHtml(listEnvironments(run.releaseEnvironments))}`);
   }
 
@@ -719,19 +784,27 @@ async function refreshRuns() {
       return;
     }
 
-    // Runs come newest first: the newest one stays on the Release tab and
-    // the earlier ones go to History.
+    // Runs come newest first: the newest release stays on the Release tab,
+    // the newest Composer run on the Composer tab, the rest go to History.
 
-    const [current, ...previous] = runs;
+    const current = runs.find(run => run.kind !== "composer");
+    const currentComposer = runs.find(run => run.kind === "composer");
+    const previous = runs.filter(run => run !== current && run !== currentComposer);
 
-    let title = "Last run";
-
-    if (current.status === "running") {
-      title = "Current run";
+    if (current) {
+      document.getElementById("current-title").textContent = current.status === "running" ? "Current run" : "Last run";
+      document.getElementById("current-run").innerHTML = renderRun(current);
     }
 
-    document.getElementById("current-title").textContent = title;
-    document.getElementById("current-run").innerHTML = renderRun(current);
+    if (currentComposer) {
+      document.getElementById("composer-title").textContent = currentComposer.status === "running" ? "Current Composer run" : "Last Composer run";
+      document.getElementById("composer-run").innerHTML = renderRun(currentComposer);
+    }
+
+    runsNeedLogin = runs.some(
+      run => run.status === "running" && Object.values(run.stages).some(stage => stage.needsGcloudLogin));
+
+    updateLoginPanel();
 
     let history = `<p class="empty">No previous runs.</p>`;
 
@@ -800,6 +873,11 @@ document.addEventListener("toggle", event => {
 document.getElementById("form").addEventListener("input", updateForm);
 
 runsContainer.addEventListener("click", async event => {
+  if (event.target.dataset.gcloudLogin) {
+    startLogin();
+
+    return;
+  }
 
   // Links and buttons inside a step row keep their own behavior; a click
   // anywhere else on the row toggles the full list of steps.
@@ -971,6 +1049,7 @@ function showTab(name) {
     tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
   }
 
+  document.getElementById("composer-view").hidden = name !== "composer";
   document.getElementById("history-view").hidden = name !== "history";
   document.getElementById("release-view").hidden = name !== "release";
 
@@ -1020,6 +1099,10 @@ async function loadHealth(refresh) {
 
     submitButton.disabled = setupBlocked;
     submitButton.title = setupBlocked ? "Fix the setup problems above first" : "";
+
+    healthNeedsLogin = checks.some(check => check.name === "gcloud" && !check.ok && /login/.test(check.problem));
+
+    updateLoginPanel();
   }
   catch (error) {
     console.error(error);
@@ -1028,10 +1111,163 @@ async function loadHealth(refresh) {
 
 document.getElementById("health-refresh").addEventListener("click", () => loadHealth(true));
 
+function renderComposerChoices() {
+  const environments = Object.keys(appConfig.composer.environments);
+
+  document.getElementById("composer-tab").hidden = !appConfig.composer.enabled;
+  document.getElementById("composer-environments").innerHTML = environments.map(
+    environment => `<label><input name="composer-environment" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
+}
+
+function selectedComposerEnvironments() {
+  return [...document.querySelectorAll("input[name=composer-environment]:checked")].map(input => input.value);
+}
+
+function updateComposerHint() {
+  const environments = selectedComposerEnvironments();
+  const hint = document.getElementById("composer-hint");
+
+  if (!environments.length) {
+    hint.textContent = "Pick the environments whose Composer DAGs to update.";
+
+    return;
+  }
+
+  const configurations = environments.flatMap(environment => appConfig.composer.environments[environment]);
+
+  hint.innerHTML = `Uploads to the gcloud configurations ${configurations.map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}, one after the other. A gcloud login is checked first.`;
+}
+
+function updateLoginPanel() {
+  const panel = document.getElementById("gcloud-login");
+  const status = document.getElementById("gcloud-login-status");
+  const running = loginState.status === "running";
+
+  panel.hidden = !(healthNeedsLogin || runsNeedLogin || running || loginState.status === "failed");
+
+  document.getElementById("gcloud-login-start").disabled = running;
+  document.getElementById("gcloud-login-code-form").hidden = !loginState.needsCode;
+
+  let message = "Your gcloud login has expired, so gcloud steps are waiting.";
+
+  if (running) {
+    message = "Signing in to gcloud…";
+  }
+  else if (loginState.status === "failed") {
+    message = "The gcloud login did not finish.";
+  }
+
+  document.getElementById("gcloud-login-message").textContent = message;
+
+  if (running && loginState.url) {
+    status.innerHTML = `Finish signing in in the browser tab gcloud opened, or <a href="${escapeHtml(loginState.url)}" rel="noopener" target="_blank">open the sign-in page</a>.`;
+  }
+  else if (running) {
+    status.textContent = "Waiting for gcloud to open the sign-in page…";
+  }
+  else if (loginState.status === "failed") {
+    status.textContent = "Try again, or run gcloud auth login in a terminal.";
+  }
+  else {
+    status.textContent = "";
+  }
+}
+
+async function pollLogin() {
+  try {
+    loginState = await (await fetch("/api/gcloud/login")).json();
+  }
+  catch (error) {
+    console.error(error);
+  }
+
+  updateLoginPanel();
+
+  if (loginState.status === "running") {
+    loginTimer = setTimeout(pollLogin, 2000);
+
+    return;
+  }
+
+  loginTimer = null;
+
+  if (loginState.status === "succeeded") {
+    healthNeedsLogin = false;
+
+    loadHealth(true);
+    refreshRuns();
+  }
+}
+
+async function startLogin() {
+  loginState = await (await fetch("/api/gcloud/login", {headers: {"Content-Type": "application/json"}, method: "POST"})).json();
+
+  updateLoginPanel();
+
+  if (!loginTimer) {
+    pollLogin();
+  }
+}
+
+document.getElementById("gcloud-login-start").addEventListener("click", startLogin);
+
+document.getElementById("gcloud-login-code-form").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const input = document.getElementById("gcloud-login-code");
+
+  await fetch("/api/gcloud/login/code", {
+    body: JSON.stringify({code: input.value}),
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  input.value = "";
+
+  pollLogin();
+});
+
+document.getElementById("composer-form").addEventListener("input", updateComposerHint);
+
+document.getElementById("composer-form").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const composerError = document.getElementById("composer-error");
+  const environments = selectedComposerEnvironments();
+  const ref = document.getElementById("composer-ref").value.trim();
+  const configurations = environments.flatMap(environment => appConfig.composer.environments[environment]);
+
+  if (!environments.length || !ref) {
+    composerError.textContent = "Pick at least one environment and enter the Asah version.";
+
+    return;
+  }
+
+  if (!confirm(`Upload the Composer DAGs of ${ref} to ${configurations.join(", ")}?`)) {
+    return;
+  }
+
+  composerError.textContent = "";
+
+  const response = await fetch("/api/composer-runs", {
+    body: JSON.stringify({environments, ref}),
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    composerError.textContent = (await response.json()).error || `Request failed (${response.status})`;
+  }
+
+  refreshRuns();
+});
+
 async function start() {
   appConfig = await (await fetch("/api/config")).json();
 
   renderChoices();
+  renderComposerChoices();
+  updateComposerHint();
   updateForm();
   loadHealth(false);
   loadBranches();

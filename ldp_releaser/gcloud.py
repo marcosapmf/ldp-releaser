@@ -6,8 +6,98 @@ are never changed, and the active configuration is never switched.
 """
 
 import json
+import re
 import shutil
 import subprocess
+import threading
+import time
+
+URL_PATTERN = re.compile(r"https://\S+")
+
+
+class Login:
+
+    # One `gcloud auth login` at a time, started from the page. gcloud opens
+    # the sign-in page in the browser and waits for Google to call it back;
+    # when it cannot open a browser it prints the link and asks for the
+    # verification code instead, which the page passes on.
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._process = None
+        self._state = idle_state()
+
+    def send_code(self, code):
+        with self._lock:
+            if not self._process or self._state["status"] != "running":
+                return False
+
+            self._process.stdin.write(code.strip() + "\n")
+            self._process.stdin.flush()
+
+            self._state["needsCode"] = False
+
+            return True
+
+    def start(self):
+        with self._lock:
+            if self._state["status"] == "running":
+                return self.state()
+
+            command = ["gcloud", "auth", "login", "--brief"]
+            account = active_account()
+
+            if account:
+                command.append(account)
+
+            self._process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+            self._state = {
+                "needsCode": False,
+                "output": "",
+                "startedAt": time.time(),
+                "status": "running",
+                "url": None,
+            }
+
+        threading.Thread(daemon=True, target=self._watch).start()
+
+        return self.state()
+
+    def state(self):
+        with self._lock:
+            return dict(self._state)
+
+    def _watch(self):
+        process = self._process
+
+        for line in process.stdout:
+            with self._lock:
+                self._state["output"] = (self._state["output"] + line)[-4000:]
+
+                match = URL_PATTERN.search(line)
+
+                if match and not self._state["url"]:
+                    self._state["url"] = match.group(0)
+
+                if re.search(r"(verification|authorization) code", line, re.IGNORECASE):
+                    self._state["needsCode"] = True
+
+        process.wait()
+
+        status = "failed"
+
+        if process.returncode == 0:
+            status = "succeeded"
+
+        with self._lock:
+            self._state["needsCode"] = False
+            self._state["status"] = status
+
+
+def idle_state():
+    return {"needsCode": False, "output": "", "startedAt": None, "status": "idle", "url": None}
 
 
 def active_account():
@@ -18,6 +108,23 @@ def active_account():
         return None
 
     return completed.stdout.strip() or None
+
+
+def login_problem():
+
+    # `gcloud auth list` only reads local files and keeps showing an account
+    # after its login expires; getting a token proves the login still works.
+    # The token itself is discarded.
+
+    if not active_account():
+        return "no gcloud login; run `gcloud auth login`"
+
+    completed = run(["gcloud", "auth", "print-access-token"])
+
+    if completed.returncode:
+        return "your gcloud login has expired; run `gcloud auth login`"
+
+    return None
 
 
 def configured(settings):
@@ -36,8 +143,8 @@ def describe(name):
 
 def problems(settings):
 
-    # What is missing for the gcloud steps, without calling Google Cloud: only
-    # the local CLI, login and configurations are checked.
+    # What is missing for the gcloud steps: the CLI, a login that still
+    # works, and the team's configurations.
 
     if not configured(settings):
         return []
@@ -45,8 +152,10 @@ def problems(settings):
     if not shutil.which("gcloud"):
         return ["the gcloud CLI is not installed"]
 
-    if not active_account():
-        return ["no gcloud login; run `gcloud auth login`"]
+    login = login_problem()
+
+    if login:
+        return [login]
 
     found = []
 
@@ -88,10 +197,12 @@ def sync(settings):
     if not shutil.which("gcloud"):
         return ["gcloud is not installed, so no configurations were created"]
 
-    account = active_account()
+    login = login_problem()
 
-    if not account:
-        return ["no gcloud login, so no configurations were created; run `gcloud auth login`"]
+    if login:
+        return [f"{login}; configurations are created on the next start"]
+
+    account = active_account()
 
     report = []
 

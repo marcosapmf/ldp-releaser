@@ -8,6 +8,11 @@ import sys
 from pathlib import Path
 
 STATE = Path(os.environ["FAKE_GCLOUD_STATE"])
+EXPIRED = STATE.with_name("gcloud-expired")
+
+
+def expired():
+    return bool(os.environ.get("FAKE_GCLOUD_EXPIRED")) or EXPIRED.exists()
 
 
 def main():
@@ -19,7 +24,50 @@ def main():
     arguments = sys.argv[1:]
     code = 0
 
-    if arguments[:2] == ["auth", "list"]:
+    if arguments[:2] == ["auth", "login"]:
+
+        # Like gcloud without a browser: print the sign-in link, then wait
+        # for the verification code.
+
+        print("Go to the following link in your browser, and complete the sign-in prompts:")
+        print()
+        print("    https://accounts.example/o/oauth2/auth?client=fake")
+        print()
+        print("Once finished, enter the verification code provided in your browser: ", flush=True)
+
+        if sys.stdin.readline().strip() == "good-code":
+            EXPIRED.unlink(missing_ok=True)
+
+            print("You are now logged in.")
+        else:
+            print("ERROR: invalid verification code", file=sys.stderr)
+
+            code = 1
+    elif arguments[:4] == ["composer", "environments", "storage", "dags"]:
+        def option(name):
+            return arguments[arguments.index(name) + 1]
+
+        if expired():
+            print("ERROR: Reauthentication failed.", file=sys.stderr)
+
+            code = 1
+        else:
+            state.setdefault("imports", []).append({
+                "environment": option("--environment"),
+                "location": option("--location"),
+                "project": option("--project"),
+                "source": option("--source"),
+            })
+
+            print(f"Imported {option('--source')}")
+    elif arguments[:2] == ["auth", "print-access-token"]:
+        if expired():
+            print("ERROR: Reauthentication failed. cannot prompt during non-interactive execution.", file=sys.stderr)
+
+            code = 1
+        else:
+            print("fake-token")
+    elif arguments[:2] == ["auth", "list"]:
         print(os.environ.get("FAKE_GCLOUD_ACCOUNT", ""))
     elif arguments[:3] == ["config", "configurations", "describe"]:
         configuration = state["configurations"].get(arguments[3])
