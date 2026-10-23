@@ -18,10 +18,11 @@ from . import gcloud, health, release
 LOGIN_POLL_SECONDS = float(os.environ.get("LDP_LOGIN_POLL_SECONDS", "15"))
 
 
-def checkout(run, worktree):
+def checkout(run, stage_name, ref, worktree):
 
     # Fetches the requested version from the team's repository into a
-    # temporary worktree, so the person's own checkout is left alone.
+    # temporary worktree, so the person's own checkout is left alone, and
+    # returns the commit.
 
     settings = release.settings
     clone = str(Path(settings["asah.checkout"]).expanduser())
@@ -32,31 +33,46 @@ def checkout(run, worktree):
         source = f"git@github.com:{settings['asah.repository']}.git"
 
     fetch = subprocess.run(
-        ["git", "-C", clone, "fetch", "--no-tags", source, run["ref"]],
+        ["git", "-C", clone, "fetch", "--no-tags", source, ref],
         capture_output=True, text=True, timeout=600)
 
-    release.append_log(run, "checkout", f"$ git fetch {source} {run['ref']}\n{fetch.stderr}")
+    release.append_log(run, stage_name, f"$ git fetch {source} {ref}\n{fetch.stderr}")
 
     target = "FETCH_HEAD"
 
     if fetch.returncode:
 
-        # A commit that only exists locally (or a short hash) cannot be
-        # fetched by name; use it if the clone has it.
+        # A short commit hash (as in a tag suffix) cannot be fetched by
+        # name, so fetch the repository and look the commit up locally.
 
-        target = run["ref"]
+        fetch_all = subprocess.run(
+            ["git", "-C", clone, "fetch", "--no-tags", source],
+            capture_output=True, text=True, timeout=900)
+
+        release.append_log(run, stage_name, f"$ git fetch {source}\n{fetch_all.stderr}")
+
+        target = ref
 
     commit = release.run_command(
-        run, "checkout", ["git", "-C", clone, "rev-parse", "--verify", f"{target}^{{commit}}"]
+        run, stage_name, ["git", "-C", clone, "rev-parse", "--verify", f"{target}^{{commit}}"]
     ).strip()
 
     release.run_command(
-        run, "checkout",
+        run, stage_name,
         ["git", "-C", clone, "worktree", "add", "--detach", str(worktree), commit])
 
-    release.update_run(run, commit=commit)
+    release.append_log(run, stage_name, f"Using {ref} at {commit[:10]}\n")
 
-    release.append_log(run, "checkout", f"Using {run['ref']} at {commit[:10]}\n")
+    return commit
+
+
+def configurations_for(environments):
+    settings = release.settings
+
+    return [
+        name for environment in settings.environments() if environment in environments
+        for name in (settings["gcloud.environments"] or {}).get(environment, [])
+    ]
 
 
 def composer_enabled(settings):
@@ -68,10 +84,7 @@ def composer_enabled(settings):
 def create_run(environments, ref):
     settings = release.settings
 
-    configurations = [
-        name for environment in settings.environments() if environment in environments
-        for name in settings["gcloud.environments"].get(environment, [])
-    ]
+    configurations = configurations_for(environments)
 
     labels = {"checkout": f"Fetch {ref}", "gcloudLogin": "gcloud login"}
     order = ["gcloudLogin", "checkout"]
@@ -116,7 +129,10 @@ def execute(run):
         # fetched again even if it was fetched before.
 
         if result == "SUCCESS":
-            result = release.run_local_stage(run, "checkout", lambda: checkout(run, worktree))
+            result = release.run_local_stage(
+                run, "checkout",
+                lambda: release.update_run(
+                    run, commit=checkout(run, "checkout", run["ref"], worktree)))
 
         for name in run["configurations"]:
             stage_name = f"dags-{name}"
@@ -152,6 +168,44 @@ def matching_remote(clone, repository):
 
         if len(parts) >= 2 and health.origin_matches(parts[1], repository):
             return parts[0]
+
+    return None
+
+
+def release_step(run):
+
+    # The Composer DAGs as part of a release, once the rollout is confirmed:
+    # the login, the commit that was released, then every configuration of
+    # the released environments. After a restart, configurations already
+    # done are skipped.
+
+    if wait_for_login(run, "composer") == "ABORTED":
+        return "ABORTED"
+
+    ref = run["asahCommit"]
+
+    if not ref:
+        ref = run["tagSuffix"].rsplit("-", 1)[-1]
+
+    worktree = Path(tempfile.mkdtemp(prefix="ldp-releaser-composer-")) / "asah"
+
+    try:
+        commit = checkout(run, "composer", ref, worktree)
+
+        release.update_run(run, composerCommit=commit)
+
+        for name in configurations_for(run["releaseEnvironments"]):
+            if name in run["composerDone"]:
+                continue
+
+            release.append_log(run, "composer", f"== {name}\n")
+
+            if upload(run, "composer", name, worktree) == "ABORTED":
+                return "ABORTED"
+
+            release.update_run(run, composerDone=[*run["composerDone"], name])
+    finally:
+        remove_worktree(run, worktree)
 
     return None
 

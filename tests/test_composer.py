@@ -174,3 +174,82 @@ class ComposerTest(AppTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleaseWithComposerTest(AppTestCase):
+
+    def asah_commit(self):
+        return subprocess.run(
+            ["git", "-C", str(self.asah_checkout), "rev-parse", "upstream/main"],
+            capture_output=True, check=True, text=True).stdout.strip()
+
+    def imports(self):
+        import json
+
+        return json.loads((self.temp / "gcloud.json").read_text()).get("imports", [])
+
+    def keep_tickets(self, run):
+        stage = run["stages"]["closeTickets"]
+
+        if stage["status"] == "running" and stage["why"] and not run["ticketsDecision"]:
+            self.call(f"/api/runs/{run['id']}/keep-tickets", {})
+
+    def test_dags_of_the_built_commit_follow_the_rollout(self):
+        commit = self.asah_commit()
+
+        self.fakes.revisions["build-asah"] = commit
+
+        run = self.run_release(
+            {"asahBranch": "main", "composer": True, "mode": "asah",
+             "releaseEnvironments": ["stg"]},
+            self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual("asah", run["mode"])
+        self.assertEqual(commit, run["composerCommit"])
+        self.assertEqual(["team-stg"], run["composerDone"])
+        self.assertLess(
+            run["stages"]["rollout"]["finishedAt"], run["stages"]["composer"]["startedAt"])
+        self.assertEqual(
+            ["a_dag.py", "b_dag.py", "src/main/resources/"],
+            [entry["source"] for entry in self.imports()])
+        self.assertEqual({"ac-team-stg"}, {entry["environment"] for entry in self.imports()})
+
+    def test_dags_of_a_typed_tag_suffix(self):
+        commit = self.asah_commit()
+
+        run = self.run_release(
+            {"composer": True, "releaseEnvironments": ["stg"],
+             "tagSuffix": f"20260101-{commit[:7]}"},
+            self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(commit, run["composerCommit"])
+        self.assertEqual(3, len(self.imports()))
+
+    def test_faro_tab_runs_only_faro(self):
+        run = self.run_release({"environment": "stg", "faroBranch": "main", "mode": "faro"})
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual("faro", run["mode"])
+        self.assertEqual("skipped", run["stages"]["asahBuild"]["status"])
+        self.assertEqual("success", run["stages"]["faroDeploy"]["status"])
+
+    def test_modes_and_composer_are_validated(self):
+        cases = [
+            ({"asahBranch": "main", "environment": "stg", "faroBranch": "main", "mode": "asah"},
+             "does not build Faro"),
+            ({"environment": "stg", "faroBranch": "main", "mode": "faro",
+              "releaseEnvironments": ["stg"], "tagSuffix": "20260101-1234567"},
+             "does not build or release Asah"),
+            ({"asahBranch": "main", "composer": True}, "pick at least one"),
+            ({"composer": True, "releaseEnvironments": ["int"], "tagSuffix": "20260101-1234567"},
+             "No gcloud configurations for int"),
+            ({"asahBranch": "main", "mode": "dataflow"}, "Unknown mode"),
+        ]
+
+        for payload, message in cases:
+            status, body = self.call("/api/runs", payload)
+
+            self.assertEqual(400, status, payload)
+            self.assertIn(message, body["error"], payload)

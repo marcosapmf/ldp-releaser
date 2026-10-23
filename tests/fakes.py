@@ -34,6 +34,7 @@ class FakeServices:
         self.numbers = {}
         self.queue = {}
         self.queue_ids = itertools.count(1)
+        self.revisions = {}
         self.slack = []
         self.ticket_numbers = itertools.count(101)
 
@@ -395,7 +396,7 @@ class FakeServices:
 
         if build["result"] == "SUCCESS":
             number = build["number"]
-            revision = f"{number:040x}"
+            revision = self.revisions.get(build["job"], f"{number:040x}")
 
             lines.append(f"+ docker build --build-arg REVISION={revision} .\n")
 

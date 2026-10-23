@@ -88,6 +88,11 @@ used as a fallback), `LDP_CHARTS_CHECKOUT`, `LDP_ASAH_CHECKOUT`, `LDP_PORT` and
 
 ## What a run does
 
+The **Release** tab runs Asah and Faro together. The **Asah** tab only runs
+the Asah part (build, tickets, charts pull requests, rollout, optional
+Composer DAGs, tag), and the **Faro** tab only builds, deploys and tags
+Faro. Each tab shows its own latest run; earlier runs are in **History**.
+
 Each section of the form is optional; leave it empty to skip those steps.
 
 1. **Asah build**: runs the build job for the branch and reads the image tag
@@ -102,11 +107,15 @@ Each section of the form is optional; leave it empty to skip those steps.
    the production branch, opens a pull request and waits for the merge.
 5. **Rollout confirmation**: links to the Argo CD instance of each
    environment; you confirm once the apps run the new suffix and are Healthy.
-6. **Faro build and deploy**: builds the branch for the configured build
+6. **Composer DAGs** (optional, when the team file has the Composer setup):
+   uploads the DAGs of the released Asah commit to the gcloud configurations
+   of the released environments, checking the gcloud login first (see
+   below).
+7. **Faro build and deploy**: builds the branch for the configured build
    environment and deploys the image it pushed.
-7. **GitHub tags** (PRD releases only): tags the exact commits that were
+8. **GitHub tags** (PRD releases only): tags the exact commits that were
    built.
-8. **Closing the tickets**: automatic for PRD releases; otherwise the page
+9. **Closing the tickets**: automatic for PRD releases; otherwise the page
    asks whether to close them or keep them open.
 
 If open release tickets exist when you start a run (for example from a

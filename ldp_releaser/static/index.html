@@ -160,6 +160,8 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .health li.required { color: var(--fail); }
 .health li.optional { color: var(--muted); }
 .code-form { display: flex; gap: 8px; margin-top: 10px; }
+.mode-hint { margin: 0 0 12px; }
+.check { align-items: center; display: flex; font-weight: 500; gap: 8px; }
 .coming-soon { text-align: center; padding: 40px 20px; }
 .coming-soon .hint { margin-top: 8px; }
 .code-form input { flex: 1; }
@@ -216,6 +218,8 @@ pre {
 
   <nav class="tabs" role="tablist">
     <button aria-selected="true" class="tab" data-tab="release" role="tab" type="button">Release</button>
+    <button aria-selected="false" class="tab" data-tab="asah" role="tab" type="button">Asah</button>
+    <button aria-selected="false" class="tab" data-tab="faro" role="tab" type="button">Faro</button>
     <button aria-selected="false" class="tab" data-tab="composer" hidden id="composer-tab" role="tab" type="button">Composer</button>
     <button aria-selected="false" class="tab" data-tab="dataflow" role="tab" type="button">Dataflow</button>
     <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
@@ -234,6 +238,7 @@ pre {
   </section>
 
   <div id="release-view">
+  <p class="hint mode-hint" id="mode-hint"></p>
   <section class="card health" hidden id="health">
     <div class="health-head">
       <strong>Setup problems</strong>
@@ -244,7 +249,7 @@ pre {
 
   <section class="card">
     <form id="form">
-      <fieldset>
+      <fieldset id="asah-fieldset">
         <legend>Asah</legend>
         <div>
           <label for="asah-branch">Branch to build</label>
@@ -262,6 +267,10 @@ pre {
           <div class="hint" style="margin:0 0 8px">A previous release was not completed. Reuse its tickets or start new ones?</div>
           <div class="ticket-choices" id="ticket-choices"></div>
         </div>
+        <div hidden id="composer-option-field">
+          <label class="check"><input id="composer-option" type="checkbox">Upload the Composer DAGs after the rollout</label>
+          <div class="hint" id="composer-option-hint"></div>
+        </div>
         <div id="tag-suffix-field">
           <label for="tag-suffix">Tag suffix</label>
           <input id="tag-suffix" autocomplete="off" placeholder="e.g. 20260101-abc1234" type="text">
@@ -269,7 +278,7 @@ pre {
         </div>
       </fieldset>
 
-      <fieldset>
+      <fieldset id="faro-fieldset">
         <legend>Faro</legend>
         <div>
           <label for="faro-branch">Branch</label>
@@ -348,6 +357,7 @@ const STAGE_LABELS = {
   productionPullRequest: "Charts PR to production",
   productionMerge: "production PR merged",
   rollout: "Asah rollout confirmed",
+  composer: "Composer DAGs",
   faroBuild: "Faro build",
   faroDeploy: "Faro deploy",
   tags: "GitHub tags",
@@ -368,6 +378,7 @@ const versionHint = document.getElementById("version-hint");
 const versionInput = document.getElementById("version");
 
 let appConfig = null;
+let formMode = "release";
 let healthNeedsLogin = false;
 let loginState = {status: "idle"};
 let loginTimer = null;
@@ -506,12 +517,77 @@ function selectedReleaseEnvironments() {
   return [...document.querySelectorAll("input[name=release]:checked")].map(input => input.value);
 }
 
+const MODE_HINTS = {
+  asah: "Builds and releases Asah only: build, Jira tickets, charts pull requests, rollout and, optionally, the Composer DAGs.",
+  faro: "Builds and deploys Faro only, and tags it for a PRD deploy.",
+  release: "Builds and releases Asah, then builds and deploys Faro. Leave a section empty to skip it."
+};
+
+function formValues() {
+  const composerOption = document.getElementById("composer-option");
+
+  const values = {
+    asahBranch: asahBranchInput.value.trim(),
+    composer: composerOption.checked && !composerOption.disabled,
+    environment: selectedEnvironment(),
+    faroBranch: faroBranchInput.value.trim(),
+    releaseEnvironments: selectedReleaseEnvironments(),
+    tagSuffix: tagSuffixInput.value.trim()
+  };
+
+  if (formMode === "asah") {
+    values.faroBranch = "";
+  }
+
+  if (formMode === "faro") {
+    values.asahBranch = "";
+    values.composer = false;
+    values.releaseEnvironments = [];
+    values.tagSuffix = "";
+  }
+
+  return values;
+}
+
+function composerConfigurations(environments) {
+  return environments.flatMap(environment => appConfig.composer.environments[environment] || []);
+}
+
+function updateComposerOption(values) {
+  const field = document.getElementById("composer-option-field");
+  const hint = document.getElementById("composer-option-hint");
+  const option = document.getElementById("composer-option");
+
+  field.hidden = !appConfig.composer.enabled;
+
+  const missing = values.releaseEnvironments.filter(environment => !appConfig.composer.environments[environment]);
+
+  option.disabled = !values.releaseEnvironments.length || missing.length > 0;
+
+  if (!values.releaseEnvironments.length) {
+    hint.textContent = "Pick release environments first; the DAGs go to their gcloud configurations.";
+  }
+  else if (missing.length) {
+    hint.textContent = `No gcloud configurations for ${missing.map(environment => environment.toUpperCase()).join(", ")} in the team settings.`;
+  }
+  else {
+    hint.innerHTML = `Once the rollout is confirmed, uploads the DAGs of the released Asah commit to ${composerConfigurations(values.releaseEnvironments).map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}, checking the gcloud login first.`;
+  }
+}
+
 function updateForm() {
-  const environment = selectedEnvironment();
+  const values = formValues();
+  const environment = values.environment;
+
+  document.getElementById("mode-hint").textContent = MODE_HINTS[formMode];
+  document.getElementById("asah-fieldset").hidden = formMode === "faro";
+  document.getElementById("faro-fieldset").hidden = formMode === "asah";
+
+  updateComposerOption(values);
 
   faroHint.innerHTML = `Builds for <code>${escapeHtml(appConfig.faroBuildEnvironments[environment])}</code> and deploys to <code>${escapeHtml(environment)}</code>.`;
 
-  const releaseEnvironments = selectedReleaseEnvironments();
+  const releaseEnvironments = values.releaseEnvironments;
 
   if (releaseEnvironments.length) {
     let production = ` No PR to <code>${escapeHtml(appConfig.productionBranch)}</code> is needed for these environments.`;
@@ -526,7 +602,7 @@ function updateForm() {
     releaseHint.textContent = "Pick environments to create the Jira tickets and the charts PR. None picked skips the release.";
   }
 
-  tagSuffixInput.disabled = Boolean(asahBranchInput.value.trim()) || !releaseEnvironments.length;
+  tagSuffixInput.disabled = Boolean(values.asahBranch) || !releaseEnvironments.length;
 
   if (releaseEnvironments.length && !ticketsLoaded) {
     loadOpenTickets();
@@ -534,8 +610,8 @@ function updateForm() {
 
   document.getElementById("tickets-field").hidden = !openTickets.length || !releaseEnvironments.length;
 
-  const prdRelease = isPrdRelease(environment, faroBranchInput.value.trim(), releaseEnvironments);
-  const tags = releaseTags(asahBranchInput.value.trim(), faroBranchInput.value.trim(), versionInput.value.trim() || "X.Y.Z");
+  const prdRelease = isPrdRelease(environment, values.faroBranch, releaseEnvironments);
+  const tags = releaseTags(values.asahBranch, values.faroBranch, versionInput.value.trim() || "X.Y.Z");
 
   versionInput.disabled = !prdRelease;
 
@@ -573,7 +649,10 @@ function releaseTags(asahBranch, faroBranch, version) {
 }
 
 function stageNames(run) {
-  return run.stageOrder || Object.keys(STAGE_LABELS);
+
+  // Runs saved before a step existed do not have it.
+
+  return (run.stageOrder || Object.keys(STAGE_LABELS)).filter(name => run.stages[name]);
 }
 
 function stageLabel(run, name) {
@@ -777,6 +856,14 @@ function renderRun(run) {
   </article>`;
 }
 
+function runMode(run) {
+  if (run.kind === "composer") {
+    return "composer";
+  }
+
+  return run.mode || "release";
+}
+
 async function refreshRuns() {
   try {
     const response = await fetch("/api/runs");
@@ -797,13 +884,34 @@ async function refreshRuns() {
     // Runs come newest first: the newest release stays on the Release tab,
     // the newest Composer run on the Composer tab, the rest go to History.
 
-    const current = runs.find(run => run.kind !== "composer");
-    const currentComposer = runs.find(run => run.kind === "composer");
-    const previous = runs.filter(run => run !== current && run !== currentComposer);
+    const latest = {};
+
+    for (const run of runs) {
+      const mode = runMode(run);
+
+      if (!latest[mode]) {
+        latest[mode] = run;
+      }
+    }
+
+    const shown = new Set(Object.values(latest));
+    const previous = runs.filter(run => !shown.has(run));
+    const current = latest[formMode];
+    const currentComposer = latest.composer;
+
+    let label = "run";
+
+    if (formMode !== "release") {
+      label = `${formMode[0].toUpperCase()}${formMode.slice(1)} run`;
+    }
 
     if (current) {
-      document.getElementById("current-title").textContent = current.status === "running" ? "Current run" : "Last run";
+      document.getElementById("current-title").textContent = `${current.status === "running" ? "Current" : "Last"} ${label}`;
       document.getElementById("current-run").innerHTML = renderRun(current);
+    }
+    else {
+      document.getElementById("current-title").textContent = `Current ${label}`;
+      document.getElementById("current-run").innerHTML = `<p class="empty">No runs yet.</p>`;
     }
 
     if (currentComposer) {
@@ -955,11 +1063,8 @@ runsContainer.addEventListener("click", async event => {
 document.getElementById("form").addEventListener("submit", async event => {
   event.preventDefault();
 
-  const asahBranch = asahBranchInput.value.trim();
-  const environment = selectedEnvironment();
-  const faroBranch = faroBranchInput.value.trim();
-  const releaseEnvironments = selectedReleaseEnvironments();
-  const tagSuffix = tagSuffixInput.value.trim();
+  const {asahBranch, composer, environment, faroBranch, releaseEnvironments, tagSuffix} = formValues();
+  const mode = formMode;
   const prdRelease = isPrdRelease(environment, faroBranch, releaseEnvironments);
 
   let version = "";
@@ -1003,6 +1108,10 @@ document.getElementById("form").addEventListener("submit", async event => {
     }
 
     steps.push("• Wait for you to confirm the rollout in Argo CD");
+
+    if (composer) {
+      steps.push(`• Upload the Composer DAGs of the released commit to ${composerConfigurations(releaseEnvironments).join(", ")}`);
+    }
   }
 
   if (faroBranch) {
@@ -1029,7 +1138,7 @@ document.getElementById("form").addEventListener("submit", async event => {
 
   try {
     const response = await fetch("/api/runs", {
-      body: JSON.stringify({asahBranch, environment, faroBranch, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
+      body: JSON.stringify({asahBranch, composer, environment, faroBranch, mode, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
       headers: {"Content-Type": "application/json"},
       method: "POST"
     });
@@ -1059,10 +1168,24 @@ function showTab(name) {
     tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
   }
 
+  const formTab = ["asah", "faro", "release"].includes(name);
+
   document.getElementById("composer-view").hidden = name !== "composer";
   document.getElementById("dataflow-view").hidden = name !== "dataflow";
   document.getElementById("history-view").hidden = name !== "history";
-  document.getElementById("release-view").hidden = name !== "release";
+  document.getElementById("release-view").hidden = !formTab;
+
+  if (formTab) {
+    formMode = name;
+  }
+
+  if (formTab && appConfig) {
+    updateForm();
+
+    lastRunsJson = "";
+
+    refreshRuns();
+  }
 
   try {
     localStorage.setItem("ldp-releaser-tab", name);

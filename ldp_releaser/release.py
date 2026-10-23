@@ -33,17 +33,19 @@ VERSION_PATTERN = re.compile(r"\d+(\.\d+)+")
 
 STAGE_NAMES = (
     "asahBuild", "jira", "developPullRequest", "developMerge",
-    "productionPullRequest", "productionMerge", "rollout", "faroBuild",
-    "faroDeploy", "tags", "closeTickets",
+    "productionPullRequest", "productionMerge", "rollout", "composer",
+    "faroBuild", "faroDeploy", "tags", "closeTickets",
 )
+
+MODES = ("asah", "faro", "release")
 
 # Steps that can safely pick up again after a restart: Jenkins builds are
 # re-attached and waits start waiting again. The others change Jira, git or
 # GitHub halfway, so a restart during them fails the run instead.
 
 RESUMABLE_STAGES = {
-    "asahBuild", "closeTickets", "developMerge", "faroBuild", "faroDeploy",
-    "productionMerge", "rollout",
+    "asahBuild", "closeTickets", "composer", "developMerge", "faroBuild",
+    "faroDeploy", "productionMerge", "rollout",
 }
 
 runs = {}
@@ -417,7 +419,8 @@ def create_release_tickets(jira, run):
 
 def create_run(
         asah_branch, environment, faro_branch, release_environments,
-        tag_suffix, version, discard_tickets=(), reuse_ticket=None):
+        tag_suffix, version, composer=False, mode="release", discard_tickets=(),
+        reuse_ticket=None):
 
     production = bool(
         set(settings["charts.production.environments"]) &
@@ -430,6 +433,9 @@ def create_run(
         "buildEnvironment": settings["faro.build_environments"].get(
             environment),
         "cancelRequested": False,
+        "composer": composer,
+        "composerCommit": None,
+        "composerDone": [],
         "createdAt": time.time(),
         "developMerge": None,
         "developPullRequest": None,
@@ -443,6 +449,7 @@ def create_run(
         "id": uuid.uuid4().hex[:8],
         "jiraTask": None,
         "jiraTechnicalTask": None,
+        "mode": mode,
         "prdRelease": is_prd_release(
             environment, faro_branch, release_environments),
         "productionMerge": None,
@@ -454,6 +461,7 @@ def create_run(
         "stages": {
             "asahBuild": new_stage(settings["asah.build_job"], asah_branch),
             "closeTickets": new_stage("jira", release_environments),
+            "composer": new_stage("gcloud", composer),
             "developMerge": new_stage("charts", release_environments),
             "developPullRequest": new_stage("charts", release_environments),
             "faroBuild": new_stage(settings["faro.build_job"], faro_branch),
@@ -534,6 +542,10 @@ def execute(jenkins, jira, run):
             "rollout", bool(run["releaseEnvironments"]),
             lambda: run_local_stage(
                 run, "rollout", lambda: wait_for_rollout_confirmation(run)),
+        ),
+        (
+            "composer", bool(run.get("composer")),
+            lambda: run_local_stage(run, "composer", lambda: composer_step(run)),
         ),
         ("faroBuild", bool(run["faroBranch"]), lambda: build_faro(jenkins, run)),
         (
@@ -621,6 +633,15 @@ def build_faro(jenkins, run):
     update_run(run, faroCommit=commit, faroImage=images[-1])
 
     return result
+
+
+def composer_step(run):
+
+    # Imported here: the Composer module builds on this one.
+
+    from . import composer
+
+    return composer.release_step(run)
 
 
 def extract_tag_suffix(images):
@@ -1375,6 +1396,11 @@ def validate_run(payload, verify_tags):
     environments = settings.environments()
     faro_environments = settings.faro_environments()
 
+    mode = payload.get("mode") or "release"
+
+    if mode not in MODES:
+        raise ValueError(f"Unknown mode {mode}")
+
     asah_branch = str(payload.get("asahBranch", "")).strip()
 
     if asah_branch and not BRANCH_PATTERN.fullmatch(asah_branch):
@@ -1419,6 +1445,19 @@ def validate_run(payload, verify_tags):
     if not (asah_branch or faro_branch or release_environments):
         raise ValueError("Nothing to do: fill in at least one step")
 
+    # The Asah and Faro tabs only start their own part of the flow.
+
+    if mode == "asah" and faro_branch:
+        raise ValueError("The Asah tab does not build Faro")
+
+    if mode == "faro" and (asah_branch or release_environments):
+        raise ValueError("The Faro tab does not build or release Asah")
+
+    composer = bool(payload.get("composer"))
+
+    if composer:
+        validate_composer(release_environments)
+
     version = str(payload.get("version", "")).strip() or None
 
     if version:
@@ -1442,7 +1481,32 @@ def validate_run(payload, verify_tags):
 
     return (
         asah_branch, environment, faro_branch, release_environments,
-        tag_suffix, version)
+        tag_suffix, version, composer, mode)
+
+
+def validate_composer(release_environments):
+    from . import composer
+
+    if not composer.composer_enabled(settings):
+        raise ValueError("The team settings have no Composer setup")
+
+    if not release_environments:
+        raise ValueError(
+            "The Composer DAGs go to the released environments, so pick at least one")
+
+    missing = [
+        environment for environment in release_environments
+        if environment not in (settings["gcloud.environments"] or {})
+    ]
+
+    if missing:
+        raise ValueError(
+            f"No gcloud configurations for {', '.join(missing)} in the team settings")
+
+    problem = next(iter(composer.problems(settings)), None)
+
+    if problem:
+        raise ValueError(problem)
 
 
 def verify_charts_change(run):
