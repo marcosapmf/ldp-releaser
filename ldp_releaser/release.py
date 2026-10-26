@@ -1650,17 +1650,95 @@ def verify_tags_available(asah_branch, faro_branch, version):
                 f"{completed.stderr.strip()}")
 
 
-def wait_for_merge(run, stage_name, pull_request_url):
-    add_stage_link(run, stage_name, "Pull request", pull_request_url)
-    update_stage(run, stage_name, why="Waiting for the pull request to be merged")
+def check_states(pull_request, names):
 
+    # SUCCESS, FAILED, PENDING or MISSING for each check the team requires.
+    # Check runs report a conclusion once done; commit statuses a state.
+
+    found = {}
+
+    for check in pull_request.get("statusCheckRollup") or []:
+        name = check.get("name") or check.get("context")
+        state = (check.get("conclusion") or check.get("state") or "").upper()
+
+        if state in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+            found[name] = "SUCCESS"
+        elif state in ("ACTION_REQUIRED", "CANCELLED", "ERROR", "FAILURE", "STARTUP_FAILURE",
+                       "TIMED_OUT"):
+
+            found[name] = "FAILED"
+        else:
+            found[name] = "PENDING"
+
+    return {name: found.get(name, "MISSING") for name in names}
+
+
+def merge_method(stage_name):
+    if stage_name == "developMerge":
+        return settings["charts.merge.develop_method"]
+
+    return settings["charts.merge.production_method"]
+
+
+def merge_when_ready(pull_request, pull_request_url, run, stage_name):
+
+    # Merges once the pull request is approved and the team's checks pass,
+    # and returns what it is waiting for, to be logged when it changes.
+
+    if pull_request.get("reviewDecision") != "APPROVED":
+        return "waiting for an approval"
+
+    states = check_states(pull_request, settings["charts.merge.checks"] or [])
+
+    failed = [name for name, state in states.items() if state == "FAILED"]
+
+    if failed:
+        return (
+            f"not merging: {', '.join(failed)} failed; re-run it or merge by hand")
+
+    pending = [name for name, state in states.items() if state != "SUCCESS"]
+
+    if pending:
+        return f"approved, waiting for {', '.join(pending)}"
+
+    method = merge_method(stage_name)
+
+    completed = subprocess.run(
+        ["gh", "pr", "merge", pull_request_url, f"--{method}"],
+        capture_output=True, text=True, timeout=120)
+
+    if completed.returncode:
+        return f"could not merge yet: {completed.stderr.strip()[:300]}"
+
+    return f"approved and checks passed, merged ({method})"
+
+
+def wait_for_merge(run, stage_name, pull_request_url):
+    auto_merge = bool(merge_method(stage_name))
+
+    why = "Waiting for the pull request to be merged"
+
+    if auto_merge:
+        checks = " and ".join(settings["charts.merge.checks"] or [])
+
+        why = "Waiting for an approval"
+
+        if checks:
+            why += f" and {checks}"
+
+        why += "; it is then merged automatically"
+
+    add_stage_link(run, stage_name, "Pull request", pull_request_url)
+    update_stage(run, stage_name, why=why)
+
+    last_merge_note = None
     last_state = None
 
     while True:
         completed = subprocess.run(
             [
                 "gh", "pr", "view", pull_request_url, "--json",
-                "commits,mergeCommit,number,reviewDecision,state",
+                "commits,mergeCommit,number,reviewDecision,state,statusCheckRollup",
             ],
             capture_output=True, text=True, timeout=120)
 
@@ -1703,6 +1781,22 @@ def wait_for_merge(run, stage_name, pull_request_url):
             if state == "CLOSED":
                 raise RuntimeError(
                     f"{pull_request_url} was closed without being merged")
+
+            if auto_merge:
+                note = merge_when_ready(pull_request, pull_request_url, run, stage_name)
+
+                if note != last_merge_note:
+                    append_log(
+                        run, stage_name,
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {note}\n")
+
+                    last_merge_note = note
+
+                # Right after merging, look at the pull request again
+                # instead of waiting a whole poll.
+
+                if note.endswith(f"merged ({merge_method(stage_name)})"):
+                    continue
 
         if sleep_unless_cancelled(run, MERGE_POLL_SECONDS):
             return "ABORTED"

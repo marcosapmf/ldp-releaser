@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Fake gh for the tests, working on a local bare repository as "GitHub".
 
-Pull requests behave according to the tag suffix in their body:
-    ...ccccccc  closed without being merged
-    ...eeeeeee  merged with a merge commit instead of a squash
-    ...fffffff  stays open until the file merge-now exists in FAKE_GH_STATE
-Any other pull request is approved and squash-merged on the third check.
+Pull requests are approved on their second look and pass the Prisma check on
+the third; `gh pr merge` then merges them (refused before the approval). The tag suffix
+in the body changes that:
+    ...ccccccc  never approved, closed on the third look
+    ...fffffff  only approved once the file merge-now exists in FAKE_GH_STATE
+    ...9999999  the Prisma check fails
+With FAKE_GH_HUMAN_MERGES set, approved pull requests are merged on the
+third look, as a person would, without `gh pr merge`.
 """
 
 import json
@@ -64,6 +67,17 @@ def main():
             if pull["base"] == base and key in pull["title"] and
             not pull.get("merged") and not pull.get("closed")
         ]))
+    elif command == ["pr", "merge"]:
+        number = sys.argv[3].rsplit("/", 1)[1]
+        pull = state["pulls"][number]
+
+        if not approved(pull):
+            print("GraphQL: Pull request is not mergeable: approval required", file=sys.stderr)
+
+            code = 1
+        else:
+            merge(state, number, "merge" if "--merge" in sys.argv else "squash")
+            state.setdefault("merges", []).append({"number": number, "method": pull["mergedWith"]})
     elif command == ["pr", "view"]:
         number = sys.argv[3].rsplit("/", 1)[1]
         print(json.dumps(view(state, number)))
@@ -117,49 +131,13 @@ def api(state):
     return 0
 
 
-def view(state, number):
+def merge(state, number, method):
     pull = state["pulls"][number]
-    pull["views"] += 1
-
-    result = {
-        "commits": [],
-        "mergeCommit": None,
-        "number": int(number),
-        "reviewDecision": "REVIEW_REQUIRED",
-        "state": "OPEN",
-    }
-
-    if pull.get("merged"):
-        result.update(
-            commits=[{"oid": pull["headSha"]}], mergeCommit={"oid": pull["merged"]},
-            reviewDecision="APPROVED", state="MERGED")
-
-        return result
-
-    if pull.get("closed"):
-        result["state"] = "CLOSED"
-
-        return result
-
-    if pull["views"] >= 2:
-        result["reviewDecision"] = "APPROVED"
-
-    held = "fffffff" in pull["body"] and not (STATE_DIR / "merge-now").exists()
-
-    if held or pull["views"] < 3:
-        return result
-
-    if "ccccccc" in pull["body"]:
-        pull["closed"] = True
-        result["state"] = "CLOSED"
-
-        return result
-
     head = git("rev-parse", f"refs/heads/{pull['head']}")
     base = git("rev-parse", f"refs/heads/{pull['base']}")
     tree = git("rev-parse", f"{head}^{{tree}}")
 
-    if "eeeeeee" in pull["body"]:
+    if method == "merge":
         merged = git("commit-tree", tree, "-p", base, "-p", head, "-m", f"Merge #{number}")
     else:
         merged = git("commit-tree", tree, "-p", base, "-m", f"{pull['title']} (#{number})")
@@ -169,10 +147,65 @@ def view(state, number):
 
     pull["headSha"] = head
     pull["merged"] = merged
+    pull["mergedWith"] = method
 
-    result.update(
-        commits=[{"oid": head}], mergeCommit={"oid": merged},
-        reviewDecision="APPROVED", state="MERGED")
+
+def approved(pull):
+
+    # A held pull request (fffffff) is only approved once merge-now exists;
+    # one that will be closed (ccccccc) never is.
+
+    if "ccccccc" in pull["body"]:
+        return False
+
+    if "fffffff" in pull["body"] and not (STATE_DIR / "merge-now").exists():
+        return False
+
+    return pull["views"] >= 2
+
+
+def view(state, number):
+    pull = state["pulls"][number]
+    pull["views"] += 1
+
+    # The Prisma scan finishes one look after the approval, so a pull
+    # request is seen approved but still waiting for it. It passes unless
+    # the tag suffix in the body is 9999999.
+
+    prisma = {"conclusion": "", "name": "Prisma Cloud / Code analysis", "status": "IN_PROGRESS"}
+
+    if pull["views"] >= 3:
+        prisma["status"] = "COMPLETED"
+        prisma["conclusion"] = "FAILURE" if "9999999" in pull["body"] else "SUCCESS"
+
+    result = {
+        "commits": [],
+        "mergeCommit": None,
+        "number": int(number),
+        "reviewDecision": "APPROVED" if approved(pull) else "REVIEW_REQUIRED",
+        "state": "OPEN",
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS", "name": "diff", "status": "COMPLETED"}, prisma,
+        ],
+    }
+
+    if not pull.get("merged") and "ccccccc" in pull["body"] and pull["views"] >= 3:
+        pull["closed"] = True
+
+    # Without merge settings in the team file a person merges: the fake
+    # does it on the third look when FAKE_GH_HUMAN_MERGES is set.
+
+    if (not pull.get("merged") and not pull.get("closed") and approved(pull) and
+            pull["views"] >= 3 and os.environ.get("FAKE_GH_HUMAN_MERGES")):
+
+        merge(state, number, "squash")
+
+    if pull.get("merged"):
+        result.update(
+            commits=[{"oid": pull["headSha"]}], mergeCommit={"oid": pull["merged"]},
+            state="MERGED")
+    elif pull.get("closed"):
+        result["state"] = "CLOSED"
 
     return result
 

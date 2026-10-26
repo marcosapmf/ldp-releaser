@@ -388,3 +388,91 @@ class FaroEnvironmentsTest(AppTestCase):
         self.assertEqual("success", run["status"], run["error"])
         self.assertEqual(
             f"{2:040x}", self.gh_state_data()["tags"]["example-org/faro:faro-v2.0.0"])
+
+
+class AutoMergeTest(AppTestCase):
+
+    def keep_tickets(self, run):
+        stage = run["stages"]["closeTickets"]
+
+        if stage["status"] == "running" and stage["why"] and not run["ticketsDecision"]:
+            self.call(f"/api/runs/{run['id']}/keep-tickets", {})
+
+    def test_approved_pull_requests_are_merged_once_prisma_passes(self):
+        run = self.run_release(
+            {"releaseEnvironments": ["stg", "int"], "tagSuffix": "20260101-1234567"},
+            self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(
+            [{"method": "squash", "number": "1"}, {"method": "merge", "number": "2"}],
+            self.gh_state_data()["merges"])
+
+        develop_log = run["stages"]["developMerge"]["log"]
+
+        self.assertIn("waiting for Prisma Cloud / Code analysis", develop_log)
+        self.assertIn("approved and checks passed, merged (squash)", develop_log)
+        self.assertIn(
+            "merged (merge)", run["stages"]["productionMerge"]["log"])
+
+    def test_a_failed_prisma_check_blocks_the_merge(self):
+        status, body = self.call(
+            "/api/runs", {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-9999999"})
+        run_id = body["id"]
+
+        deadline = time.time() + 30
+
+        while time.time() < deadline:
+            log = self.run_by_id(run_id)["stages"]["developMerge"]["log"]
+
+            if "failed" in log:
+                break
+
+            time.sleep(0.1)
+
+        self.assertIn(
+            "not merging: Prisma Cloud / Code analysis failed; re-run it or merge by hand", log)
+
+        time.sleep(1)
+
+        self.assertNotIn("merges", self.gh_state_data())
+        self.assertEqual("running", self.run_by_id(run_id)["stages"]["developMerge"]["status"])
+
+        self.call(f"/api/runs/{run_id}/cancel", {})
+
+        self.assertEqual("aborted", self.wait(run_id)["status"])
+
+
+class HumanMergeTest(AppTestCase):
+
+    def environment(self):
+        return {**super().environment(), "FAKE_GH_HUMAN_MERGES": "1"}
+
+    def write_settings(self):
+
+        # A team without merge settings: people merge the pull requests.
+
+        super().write_settings()
+
+        team = self.temp / "config" / "ldp-releaser" / "ldp-releaser.team.toml"
+
+        text = team.read_text()
+        start = text.index("[charts.merge]")
+        end = text.index("[jira]")
+
+        team.write_text(text[:start] + text[end:])
+
+    def test_without_merge_settings_the_run_waits_for_a_person(self):
+        def keep(run):
+            stage = run["stages"]["closeTickets"]
+
+            if stage["status"] == "running" and stage["why"] and not run["ticketsDecision"]:
+                self.call(f"/api/runs/{run['id']}/keep-tickets", {})
+
+        run = self.run_release(
+            {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-1234567"}, keep)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertNotIn("merges", self.gh_state_data())
+        self.assertNotIn("checks passed, merged", run["stages"]["developMerge"]["log"])
+        self.assertIn("merged (approved)", run["stages"]["developMerge"]["log"])

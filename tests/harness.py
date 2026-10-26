@@ -64,6 +64,11 @@ prd = "deploy/prd.yaml"
 [charts.production]
 environments = ["int", "prd"]
 
+[charts.merge]
+checks = ["Prisma Cloud / Code analysis"]
+develop_method = "squash"
+production_method = "merge"
+
 [jira]
 url = "{url}"
 project = "PROJ"

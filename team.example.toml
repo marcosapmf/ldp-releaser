@@ -53,6 +53,13 @@ prd = "deploy/asah/prd.yaml"
 [charts.production]
 environments = ["int", "prd"]
 
+# Optional: merge the charts pull requests once they are approved and these
+# checks passed, with these methods. Without it, a person merges them.
+[charts.merge]
+checks = ["Code analysis"]
+develop_method = "squash"           # squash, merge or rebase
+production_method = "merge"
+
 [jira]
 url = "https://example.atlassian.example"
 project = "PROJ"

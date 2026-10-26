@@ -34,8 +34,9 @@ GENERIC_PATTERNS = {
 # Setting values that are ordinary words, not private details.
 
 COMMON_VALUES = {
-    "closed", "completed", "develop", "discarded", "in progress", "production",
-    "selected for development", "tagsuffix", "task", "technical task",
+    "closed", "completed", "develop", "discarded", "in progress", "merge",
+    "prisma cloud / code analysis", "production", "rebase",
+    "selected for development", "squash", "tagsuffix", "task", "technical task",
 }
 
 PUBLIC_HOSTS = {"github.com", "id.atlassian.com"}

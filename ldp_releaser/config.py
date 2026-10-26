@@ -47,6 +47,9 @@ TEAM_SCHEMA = {
     "charts.contributing_url": "url",
     "charts.develop_branch": "str",
     "charts.files": "table",
+    "charts.merge.checks": "list",
+    "charts.merge.develop_method": "merge_method",
+    "charts.merge.production_method": "merge_method",
     "charts.production.environments": "list",
     "charts.production_branch": "str",
     "charts.repository": "repository",
@@ -83,6 +86,8 @@ TEAM_SCHEMA = {
 
 OPTIONAL_KEYS = {
     "asah.checkout", "asah.composer_directory", "asah.composer_script",
+    "charts.merge.checks", "charts.merge.develop_method",
+    "charts.merge.production_method",
     "gcloud.configurations", "gcloud.environments", "server.port",
     "slack.webhook_url",
 }
@@ -316,6 +321,9 @@ def validate_kind(kind, value):
             return "must map each environment to an http(s) URL"
     elif not isinstance(value, str):
         return "must be a string"
+    elif kind == "merge_method":
+        if value not in ("merge", "rebase", "squash"):
+            return "must be merge, rebase or squash"
     elif kind == "pattern":
         try:
             pattern = re.compile(value)
@@ -386,6 +394,15 @@ def validate_team(team):
                 problems.append(
                     f"gcloud.environments.{environment} names unknown "
                     f"configurations: {', '.join(unknown)}")
+
+    merge_methods = [
+        key for key in ("charts.merge.develop_method", "charts.merge.production_method")
+        if get_value(team, key)
+    ]
+
+    if len(merge_methods) == 1:
+        problems.append(
+            "charts.merge.develop_method and charts.merge.production_method go together")
 
     composer_keys = [
         key for key in ("asah.composer_directory", "asah.composer_script")

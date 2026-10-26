@@ -104,7 +104,9 @@ Each section of the form is optional; leave it empty to skip those steps.
    ones, see below) and moves them to In Progress.
 3. **Charts pull request**: sets the tag suffix in each selected
    environment's values file, opens a pull request to the develop branch,
-   calls the Slack workflow and waits for the merge.
+   calls the Slack workflow and waits for the merge. With `[charts.merge]`
+   in the team file, the tool merges it itself once it is approved and the
+   listed checks passed; a failed check stops it from merging.
 4. **Production pull request** (only for environments listed in
    `charts.production.environments`): cherry-picks the merged commit onto
    the production branch, opens a pull request and waits for the merge.
