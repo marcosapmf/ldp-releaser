@@ -88,7 +88,10 @@ used as a fallback), `LDP_CHARTS_CHECKOUT`, `LDP_ASAH_CHECKOUT`, `LDP_PORT` and
 
 ## What a run does
 
-The **Release** tab runs Asah and Faro together. The **Asah** tab only runs
+The **Release** tab runs Asah and Faro together, with one environment picker
+for everything: Asah is released, the Composer DAGs are uploaded (if ticked)
+and Faro is built and deployed to the same environments, one environment
+after the other for Faro. The **Asah** tab only runs
 the Asah part (build, tickets, charts pull requests, rollout, optional
 Composer DAGs, tag), and the **Faro** tab only builds, deploys and tags
 Faro. Each tab shows its own latest run; earlier runs are in **History**.

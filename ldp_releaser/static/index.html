@@ -249,6 +249,13 @@ pre {
 
   <section class="card">
     <form id="form">
+      <fieldset hidden id="shared-fieldset">
+        <legend>Environments</legend>
+        <div>
+          <div class="choices" id="shared-choices"></div>
+          <div class="hint" id="shared-hint"></div>
+        </div>
+      </fieldset>
       <fieldset id="asah-fieldset">
         <legend>Asah</legend>
         <div>
@@ -258,8 +265,8 @@ pre {
           <div class="hint">Runs the Asah build job. Leave empty to skip the build.</div>
         </div>
         <div>
-          <label>Release to</label>
-          <div class="choices" id="release-choices"></div>
+          <label class="own-environments">Release to</label>
+          <div class="choices own-environments" id="release-choices"></div>
           <div class="hint" id="release-hint"></div>
         </div>
         <div hidden id="tickets-field">
@@ -287,8 +294,8 @@ pre {
           <div class="hint">Leave empty to skip the Faro build and deploy.</div>
         </div>
         <div>
-          <label>Environments</label>
-          <div class="choices" id="environment-choices"></div>
+          <label class="own-environments">Environments</label>
+          <div class="choices own-environments" id="environment-choices"></div>
           <div class="hint" id="faro-hint"></div>
         </div>
       </fieldset>
@@ -407,7 +414,7 @@ async function loadOpenTickets() {
 function renderTicketChoices() {
   const field = document.getElementById("tickets-field");
 
-  field.hidden = !openTickets.length || !selectedReleaseEnvironments().length;
+  field.hidden = !openTickets.length || !formValues().releaseEnvironments.length;
 
   const previous = document.querySelector("input[name=tickets]:checked")?.value;
 
@@ -520,7 +527,7 @@ function selectedReleaseEnvironments() {
 const MODE_HINTS = {
   asah: "Builds and releases Asah only: build, Jira tickets, charts pull requests, rollout and, optionally, the Composer DAGs.",
   faro: "Builds and deploys Faro only, and tags it for a PRD deploy.",
-  release: "Builds and releases Asah, then builds and deploys Faro. Leave a section empty to skip it."
+  release: "Releases Asah, uploads the Composer DAGs and deploys Faro to the same environments. Leave a project's branch empty to skip it."
 };
 
 function formValues() {
@@ -546,7 +553,77 @@ function formValues() {
     values.tagSuffix = "";
   }
 
+  // The Release tab has one environment picker for every project: Asah is
+  // released there when it has a branch or a tag suffix, Faro is deployed
+  // there when it has a branch.
+
+  if (formMode === "release") {
+    const shared = selectedSharedEnvironments();
+
+    values.releaseEnvironments = [];
+    values.faroEnvironments = [];
+
+    if (values.asahBranch || values.tagSuffix) {
+      values.releaseEnvironments = shared.filter(environment => appConfig.environments.includes(environment));
+    }
+
+    if (values.faroBranch) {
+      values.faroEnvironments = shared.filter(environment => appConfig.faroEnvironments.includes(environment));
+    }
+  }
+
   return values;
+}
+
+function selectedSharedEnvironments() {
+  return [...document.querySelectorAll("input[name=shared-environment]:checked")].map(input => input.value);
+}
+
+function sharedEnvironments() {
+  return [...new Set([...appConfig.environments, ...appConfig.faroEnvironments])];
+}
+
+function updateSharedHint(values) {
+  const hint = document.getElementById("shared-hint");
+  const shared = selectedSharedEnvironments();
+
+  if (!shared.length) {
+    hint.textContent = "Pick the environments; they apply to Asah, the Composer DAGs and Faro.";
+
+    return;
+  }
+
+  const parts = [];
+
+  if (values.releaseEnvironments.length) {
+    parts.push(`Asah released to ${values.releaseEnvironments.map(environment => environment.toUpperCase()).join(", ")}`);
+  }
+  else {
+    parts.push("no Asah release (no branch or tag suffix)");
+  }
+
+  if (values.composer) {
+    parts.push("Composer DAGs uploaded");
+  }
+
+  if (values.faroEnvironments.length) {
+    parts.push(`Faro deployed to ${values.faroEnvironments.join(", ")}`);
+  }
+  else {
+    parts.push("no Faro deploy (no branch)");
+  }
+
+  const unsupported = shared.filter(
+    environment => (values.asahBranch || values.tagSuffix) && !appConfig.environments.includes(environment) ||
+      values.faroBranch && !appConfig.faroEnvironments.includes(environment));
+
+  let note = "";
+
+  if (unsupported.length) {
+    note = ` ${unsupported.join(", ")} is not available for every project and is skipped where it is not.`;
+  }
+
+  hint.textContent = `${parts.join("; ")}.${note}`;
 }
 
 function composerConfigurations(environments) {
@@ -576,14 +653,18 @@ function updateComposerOption(values) {
 }
 
 function updateForm() {
+
+  // Whether the Composer box can be ticked depends on the environments, and
+  // whether it counts depends on the box, so read the form again after it.
+
+  updateComposerOption(formValues());
+
   const values = formValues();
   const faroEnvironments = values.faroEnvironments;
 
   document.getElementById("mode-hint").textContent = MODE_HINTS[formMode];
   document.getElementById("asah-fieldset").hidden = formMode === "faro";
   document.getElementById("faro-fieldset").hidden = formMode === "asah";
-
-  updateComposerOption(values);
 
   faroHint.innerHTML = faroPlan(faroEnvironments);
 
@@ -602,7 +683,21 @@ function updateForm() {
     releaseHint.textContent = "Pick environments to create the Jira tickets and the charts PR. None picked skips the release.";
   }
 
-  tagSuffixInput.disabled = Boolean(values.asahBranch) || !releaseEnvironments.length;
+  let environmentsPicked = releaseEnvironments.length > 0;
+
+  if (formMode === "release") {
+    environmentsPicked = selectedSharedEnvironments().length > 0;
+  }
+
+  tagSuffixInput.disabled = Boolean(values.asahBranch) || !environmentsPicked;
+
+  document.getElementById("shared-fieldset").hidden = formMode !== "release";
+
+  for (const element of document.querySelectorAll(".own-environments")) {
+    element.hidden = formMode === "release";
+  }
+
+  updateSharedHint(values);
 
   if (releaseEnvironments.length && !ticketsLoaded) {
     loadOpenTickets();
@@ -1230,6 +1325,9 @@ catch (error) {
 }
 
 function renderChoices() {
+  document.getElementById("shared-choices").innerHTML = sharedEnvironments().map(
+    environment => `<label><input name="shared-environment" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
+
   document.getElementById("release-choices").innerHTML = appConfig.environments.map(
     environment => `<label><input name="release" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
 
