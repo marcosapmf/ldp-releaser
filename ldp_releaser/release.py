@@ -318,10 +318,16 @@ def create_pull_request(run, stage_name, base_branch, body, branch, worktree):
 
 
 def create_release_tags(run):
-    for commit_field, repository, tag in release_tags(
+    prd_environment = settings["release.prd_environment"]
+
+    for project, repository, tag in release_tags(
             run["asahBranch"], run["faroBranch"], run["version"]):
 
-        commit = run[commit_field]
+        if project == "asah":
+            commit = run["asahCommit"]
+        else:
+            commit = run.get("faroCommits", {}).get(prd_environment) or run.get(
+                "faroCommit")
 
         if commit is None:
             raise RuntimeError(
@@ -418,7 +424,7 @@ def create_release_tickets(jira, run):
 
 
 def create_run(
-        asah_branch, environment, faro_branch, release_environments,
+        asah_branch, faro_environments, faro_branch, release_environments,
         tag_suffix, version, composer=False, mode="release", discard_tickets=(),
         reuse_ticket=None):
 
@@ -430,8 +436,6 @@ def create_run(
         "asahBranch": asah_branch,
         "asahCommit": None,
         "asahImages": [],
-        "buildEnvironment": settings["faro.build_environments"].get(
-            environment),
         "cancelRequested": False,
         "composer": composer,
         "composerCommit": None,
@@ -440,18 +444,18 @@ def create_run(
         "developMerge": None,
         "developPullRequest": None,
         "discardTickets": list(discard_tickets),
-        "environment": environment,
         "error": None,
         "faroBranch": faro_branch,
-        "faroCommit": None,
-        "faroImage": None,
+        "faroCommits": {},
+        "faroEnvironments": faro_environments,
+        "faroImages": {},
         "finishedAt": None,
         "id": uuid.uuid4().hex[:8],
         "jiraTask": None,
         "jiraTechnicalTask": None,
         "mode": mode,
         "prdRelease": is_prd_release(
-            environment, faro_branch, release_environments),
+            faro_branch, faro_environments, release_environments),
         "productionMerge": None,
         "productionPullRequest": None,
         "releaseEnvironments": release_environments,
@@ -464,8 +468,6 @@ def create_run(
             "composer": new_stage("gcloud", composer),
             "developMerge": new_stage("charts", release_environments),
             "developPullRequest": new_stage("charts", release_environments),
-            "faroBuild": new_stage(settings["faro.build_job"], faro_branch),
-            "faroDeploy": new_stage(settings["faro.deploy_job"], faro_branch),
             "jira": new_stage("jira", release_environments),
             "productionMerge": new_stage("charts", production),
             "productionPullRequest": new_stage("charts", production),
@@ -477,6 +479,34 @@ def create_run(
         "ticketsDecision": None,
         "version": version,
     }
+
+    # Faro gets a build and a deploy step per environment, one environment
+    # after the other.
+
+    labels = {}
+    order = []
+
+    for name in STAGE_NAMES:
+        if name == "faroDeploy":
+            continue
+
+        if name != "faroBuild":
+            order.append(name)
+
+            continue
+
+        for environment in faro_environments:
+            for step, job in (("build", "faro.build_job"), ("deploy", "faro.deploy_job")):
+                stage_name = f"faro{step.capitalize()}-{environment}"
+
+                run["stages"][stage_name] = new_stage(settings[job], True)
+
+                order.append(stage_name)
+
+                labels[stage_name] = f"Faro {step} ({environment})"
+
+    run["stageLabels"] = labels
+    run["stageOrder"] = order
 
     if release_environments:
         run["releaseSummary"] = release_summary(release_environments)
@@ -547,16 +577,7 @@ def execute(jenkins, jira, run):
             "composer", bool(run.get("composer")),
             lambda: run_local_stage(run, "composer", lambda: composer_step(run)),
         ),
-        ("faroBuild", bool(run["faroBranch"]), lambda: build_faro(jenkins, run)),
-        (
-            "faroDeploy", bool(run["faroBranch"]),
-            lambda: run_stage(
-                jenkins, run, "faroDeploy", settings["faro.deploy_job"],
-                {
-                    settings["faro.environment_parameter"]: run["environment"],
-                    settings["faro.image_parameter"]: run["faroImage"],
-                }),
-        ),
+        *faro_steps(jenkins, run),
         (
             "tags", bool(run["version"]),
             lambda: run_local_stage(run, "tags", lambda: create_release_tags(run)),
@@ -611,28 +632,87 @@ def build_asah(jenkins, run):
     return result
 
 
-def build_faro(jenkins, run):
+def build_faro(jenkins, run, environment, stage_name):
     result = run_stage(
-        jenkins, run, "faroBuild", settings["faro.build_job"],
+        jenkins, run, stage_name, settings["faro.build_job"],
         {
             settings["faro.branch_parameter"]: run["faroBranch"],
-            settings["faro.environment_parameter"]: run["buildEnvironment"],
+            settings["faro.environment_parameter"]:
+                settings["faro.build_environments"][environment],
         })
 
     if result != "SUCCESS":
         return result
 
     commit, images = inspect_build(
-        jenkins, settings.compiled("faro.image_pattern"), run, "faroBuild")
+        jenkins, settings.compiled("faro.image_pattern"), run, stage_name)
 
     if not images:
         raise RuntimeError(
             "The Faro build passed, but its log has no image matching "
             "faro.image_pattern")
 
-    update_run(run, faroCommit=commit, faroImage=images[-1])
+    with runs_lock:
+        run["faroCommits"] = {**run.get("faroCommits", {}), environment: commit}
+        run["faroImages"] = {**run.get("faroImages", {}), environment: images[-1]}
+
+    on_change(run)
 
     return result
+
+
+def faro_environments(run):
+
+    # Runs saved before Faro took several environments have one.
+
+    if "faroEnvironments" in run:
+        return run["faroEnvironments"]
+
+    if run["faroBranch"]:
+        return [run["environment"]]
+
+    return []
+
+
+def faro_image(run, environment):
+    return run.get("faroImages", {}).get(environment) or run.get("faroImage")
+
+
+def faro_stage_names(run, environment):
+    if f"faroBuild-{environment}" in run["stages"]:
+        return f"faroBuild-{environment}", f"faroDeploy-{environment}"
+
+    return "faroBuild", "faroDeploy"
+
+
+def faro_steps(jenkins, run):
+
+    # Build then deploy, environment by environment: the next build starts
+    # only once the previous deploy has finished.
+
+    steps = []
+
+    for environment in faro_environments(run):
+        build_name, deploy_name = faro_stage_names(run, environment)
+
+        steps.append(
+            (
+                build_name, True,
+                lambda environment=environment, build_name=build_name: build_faro(
+                    jenkins, run, environment, build_name),
+            ))
+        steps.append(
+            (
+                deploy_name, True,
+                lambda environment=environment, deploy_name=deploy_name: run_stage(
+                    jenkins, run, deploy_name, settings["faro.deploy_job"],
+                    {
+                        settings["faro.environment_parameter"]: environment,
+                        settings["faro.image_parameter"]: faro_image(run, environment),
+                    }),
+            ))
+
+    return steps
 
 
 def composer_step(run):
@@ -713,13 +793,13 @@ def inspect_build(jenkins, image_pattern, run, stage_name):
     return commit, list(dict.fromkeys(image_pattern.findall(console)))
 
 
-def is_prd_release(environment, faro_branch, release_environments):
+def is_prd_release(faro_branch, faro_environments, release_environments):
     prd_environment = settings["release.prd_environment"]
 
     if prd_environment in release_environments:
         return True
 
-    return bool(faro_branch) and environment == prd_environment
+    return bool(faro_branch) and prd_environment in faro_environments
 
 
 def list_environments(environments):
@@ -1037,14 +1117,14 @@ def release_tags(asah_branch, faro_branch, version):
     if version and asah_branch:
         tags.append(
             (
-                "asahCommit", settings["asah.repository"],
+                "asah", settings["asah.repository"],
                 settings["asah.tag_format"].format(version=version),
             ))
 
     if version and faro_branch:
         tags.append(
             (
-                "faroCommit", settings["faro.repository"],
+                "faro", settings["faro.repository"],
                 settings["faro.tag_format"].format(version=version),
             ))
 
@@ -1365,8 +1445,11 @@ def stage_done(run, stage_name):
     if stage_name == "asahBuild" and not run["asahImages"]:
         return False
 
-    if stage_name == "faroBuild" and not run["faroImage"]:
-        return False
+    if stage_name.startswith("faroBuild"):
+        build_environment = stage_name.partition("-")[2] or run.get("environment")
+
+        if not faro_image(run, build_environment):
+            return False
 
     if stage["status"] == "success":
         return True
@@ -1436,11 +1519,26 @@ def validate_run(payload, verify_tags):
     if faro_branch and not BRANCH_PATTERN.fullmatch(faro_branch):
         raise ValueError("Invalid Faro branch name")
 
-    environment = payload.get("environment")
+    selected = payload.get("faroEnvironments")
 
-    if faro_branch and environment not in faro_environments:
+    if selected is None and payload.get("environment"):
+        selected = [payload["environment"]]
+
+    selected = selected or []
+
+    if not isinstance(selected, list) or not set(selected) <= set(faro_environments):
         raise ValueError(
-            f"Faro environment must be one of {', '.join(faro_environments)}")
+            f"Faro environments must be among {', '.join(faro_environments)}")
+
+    if faro_branch and not selected:
+        raise ValueError("Pick at least one Faro environment")
+
+    selected_faro_environments = []
+
+    if faro_branch:
+        selected_faro_environments = [
+            environment for environment in faro_environments if environment in selected
+        ]
 
     if not (asah_branch or faro_branch or release_environments):
         raise ValueError("Nothing to do: fill in at least one step")
@@ -1469,7 +1567,8 @@ def validate_run(payload, verify_tags):
                 "Tags point at the commits built in the run, so enter an "
                 "Asah or Faro branch to tag")
 
-        if not is_prd_release(environment, faro_branch, release_environments):
+        if not is_prd_release(
+                faro_branch, selected_faro_environments, release_environments):
             prd_environment = settings["release.prd_environment"]
 
             raise ValueError(
@@ -1480,8 +1579,8 @@ def validate_run(payload, verify_tags):
             verify_tags_available(asah_branch, faro_branch, version)
 
     return (
-        asah_branch, environment, faro_branch, release_environments,
-        tag_suffix, version, composer, mode)
+        asah_branch, selected_faro_environments, faro_branch,
+        release_environments, tag_suffix, version, composer, mode)
 
 
 def validate_composer(release_environments):

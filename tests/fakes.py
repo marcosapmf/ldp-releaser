@@ -170,7 +170,9 @@ class FakeServices:
             elif build["polls"] >= 4:
                 build["result"] = "SUCCESS"
 
-                if branch == "broken":
+                if branch == "broken" or (
+                        branch == "broken-prd" and build["params"].get("ENVIRONMENT") == "prd"):
+
                     build["result"] = "FAILURE"
 
             return send(

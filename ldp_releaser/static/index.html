@@ -287,7 +287,7 @@ pre {
           <div class="hint">Leave empty to skip the Faro build and deploy.</div>
         </div>
         <div>
-          <label>Environment</label>
+          <label>Environments</label>
           <div class="choices" id="environment-choices"></div>
           <div class="hint" id="faro-hint"></div>
         </div>
@@ -509,8 +509,8 @@ function releaseSummary(environments) {
   return appConfig.title.replaceAll("{environments}", listEnvironments(environments)).replaceAll("{plural}", plural);
 }
 
-function selectedEnvironment() {
-  return document.querySelector("input[name=environment]:checked")?.value;
+function selectedFaroEnvironments() {
+  return [...document.querySelectorAll("input[name=environment]:checked")].map(input => input.value);
 }
 
 function selectedReleaseEnvironments() {
@@ -529,7 +529,7 @@ function formValues() {
   const values = {
     asahBranch: asahBranchInput.value.trim(),
     composer: composerOption.checked && !composerOption.disabled,
-    environment: selectedEnvironment(),
+    faroEnvironments: selectedFaroEnvironments(),
     faroBranch: faroBranchInput.value.trim(),
     releaseEnvironments: selectedReleaseEnvironments(),
     tagSuffix: tagSuffixInput.value.trim()
@@ -577,7 +577,7 @@ function updateComposerOption(values) {
 
 function updateForm() {
   const values = formValues();
-  const environment = values.environment;
+  const faroEnvironments = values.faroEnvironments;
 
   document.getElementById("mode-hint").textContent = MODE_HINTS[formMode];
   document.getElementById("asah-fieldset").hidden = formMode === "faro";
@@ -585,7 +585,7 @@ function updateForm() {
 
   updateComposerOption(values);
 
-  faroHint.innerHTML = `Builds for <code>${escapeHtml(appConfig.faroBuildEnvironments[environment])}</code> and deploys to <code>${escapeHtml(environment)}</code>.`;
+  faroHint.innerHTML = faroPlan(faroEnvironments);
 
   const releaseEnvironments = values.releaseEnvironments;
 
@@ -610,7 +610,7 @@ function updateForm() {
 
   document.getElementById("tickets-field").hidden = !openTickets.length || !releaseEnvironments.length;
 
-  const prdRelease = isPrdRelease(environment, values.faroBranch, releaseEnvironments);
+  const prdRelease = isPrdRelease(values.faroBranch, faroEnvironments, releaseEnvironments);
   const tags = releaseTags(values.asahBranch, values.faroBranch, versionInput.value.trim() || "X.Y.Z");
 
   versionInput.disabled = !prdRelease;
@@ -626,8 +626,23 @@ function updateForm() {
   }
 }
 
-function isPrdRelease(environment, faroBranch, releaseEnvironments) {
-  return releaseEnvironments.includes(appConfig.prdEnvironment) || (Boolean(faroBranch) && environment === appConfig.prdEnvironment);
+function isPrdRelease(faroBranch, faroEnvironments, releaseEnvironments) {
+  return releaseEnvironments.includes(appConfig.prdEnvironment) || (Boolean(faroBranch) && faroEnvironments.includes(appConfig.prdEnvironment));
+}
+
+function faroPlan(faroEnvironments) {
+  if (!faroEnvironments.length) {
+    return "Pick one or more environments.";
+  }
+
+  const steps = faroEnvironments.map(
+    environment => `build for <code>${escapeHtml(appConfig.faroBuildEnvironments[environment])}</code> and deploy to <code>${escapeHtml(environment)}</code>`);
+
+  if (steps.length === 1) {
+    return `${steps[0][0].toUpperCase()}${steps[0].slice(1)}.`;
+  }
+
+  return `One environment at a time: ${steps.join(", then ")}. The next build starts after the previous deploy finishes.`;
 }
 
 function needsProduction(releaseEnvironments) {
@@ -803,8 +818,14 @@ function renderRun(run) {
     images += `<div class="image">Asah tag suffix: ${escapeHtml(run.tagSuffix)}</div>`;
   }
 
+  const faroImages = run.faroImages || {};
+
   if (run.faroImage) {
-    images += `<div class="image">Faro image: ${escapeHtml(run.faroImage)}</div>`;
+    faroImages[run.environment] = run.faroImage;
+  }
+
+  for (const [environment, image] of Object.entries(faroImages)) {
+    images += `<div class="image">Faro image (${escapeHtml(environment)}): ${escapeHtml(image)}</div>`;
   }
 
   let error = "";
@@ -828,7 +849,7 @@ function renderRun(run) {
   }
 
   if (run.faroBranch) {
-    titleParts.push(`Faro ${escapeHtml(run.faroBranch)} → ${escapeHtml(run.environment)}`);
+    titleParts.push(`Faro ${escapeHtml(run.faroBranch)} → ${escapeHtml((run.faroEnvironments || [run.environment]).join(", "))}`);
   }
 
   const created = new Date(run.createdAt * 1000).toLocaleString();
@@ -1063,9 +1084,9 @@ runsContainer.addEventListener("click", async event => {
 document.getElementById("form").addEventListener("submit", async event => {
   event.preventDefault();
 
-  const {asahBranch, composer, environment, faroBranch, releaseEnvironments, tagSuffix} = formValues();
+  const {asahBranch, composer, faroBranch, faroEnvironments, releaseEnvironments, tagSuffix} = formValues();
   const mode = formMode;
-  const prdRelease = isPrdRelease(environment, faroBranch, releaseEnvironments);
+  const prdRelease = isPrdRelease(faroBranch, faroEnvironments, releaseEnvironments);
 
   let version = "";
 
@@ -1115,7 +1136,9 @@ document.getElementById("form").addEventListener("submit", async event => {
   }
 
   if (faroBranch) {
-    steps.push(`• Build Faro ${faroBranch} for ${appConfig.faroBuildEnvironments[environment]} and deploy it to ${environment}`);
+    for (const environment of faroEnvironments) {
+      steps.push(`• Build Faro ${faroBranch} for ${appConfig.faroBuildEnvironments[environment]} and deploy it to ${environment}`);
+    }
   }
 
   if (version) {
@@ -1138,7 +1161,7 @@ document.getElementById("form").addEventListener("submit", async event => {
 
   try {
     const response = await fetch("/api/runs", {
-      body: JSON.stringify({asahBranch, composer, environment, faroBranch, mode, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
+      body: JSON.stringify({asahBranch, composer, faroBranch, faroEnvironments, mode, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
       headers: {"Content-Type": "application/json"},
       method: "POST"
     });
@@ -1211,7 +1234,7 @@ function renderChoices() {
     environment => `<label><input name="release" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
 
   document.getElementById("environment-choices").innerHTML = appConfig.faroEnvironments.map(
-    (environment, index) => `<label><input${index === 0 ? " checked" : ""} name="environment" type="radio" value="${escapeHtml(environment)}">${escapeHtml(environment)}</label>`).join("");
+    (environment, index) => `<label><input${index === 0 ? " checked" : ""} name="environment" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment)}</label>`).join("");
 }
 
 async function loadHealth(refresh) {

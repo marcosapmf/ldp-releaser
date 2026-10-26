@@ -233,7 +233,7 @@ class ReleaseWithComposerTest(AppTestCase):
         self.assertEqual("success", run["status"], run["error"])
         self.assertEqual("faro", run["mode"])
         self.assertEqual("skipped", run["stages"]["asahBuild"]["status"])
-        self.assertEqual("success", run["stages"]["faroDeploy"]["status"])
+        self.assertEqual("success", run["stages"]["faroDeploy-stg"]["status"])
 
     def test_modes_and_composer_are_validated(self):
         cases = [

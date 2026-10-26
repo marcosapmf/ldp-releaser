@@ -153,9 +153,16 @@ def free_port():
         return sock.getsockname()[1]
 
 
+# Tests use none of the person's git settings (such as commit signing
+# through a password manager), only what they set themselves.
+
+GIT_ISOLATION = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+
 def git(*args, cwd=None):
     subprocess.run(
-        ["git", *args], capture_output=True, check=True, cwd=cwd, text=True)
+        ["git", *args], capture_output=True, check=True, cwd=cwd,
+        env={**os.environ, **GIT_ISOLATION}, text=True)
 
 
 class AppTestCase(unittest.TestCase):
@@ -267,6 +274,7 @@ class AppTestCase(unittest.TestCase):
             if not key.startswith(("JIRA_API_", "LDP_"))
         }
 
+        environment.update(GIT_ISOLATION)
         environment.update(
             CLOUDSDK_CONFIG=str(self.temp / "gcloud-sdk"),
             FAKE_GCLOUD_ACCOUNT="tester@example.com",

@@ -43,7 +43,7 @@ class ReleaseTest(AppTestCase):
         self.assertEqual("failed", run["status"])
         self.assertEqual("failed", run["stages"]["asahBuild"]["status"])
         self.assertEqual("skipped", run["stages"]["jira"]["status"])
-        self.assertEqual("skipped", run["stages"]["faroBuild"]["status"])
+        self.assertEqual("skipped", run["stages"]["faroBuild-stg"]["status"])
         self.assertEqual({}, self.fakes.issues)
 
     def test_cancel_while_waiting_for_merge(self):
@@ -209,7 +209,8 @@ class ReleaseTest(AppTestCase):
             ({}, "Nothing to do"),
             ({"releaseEnvironments": ["dev"], "tagSuffix": "20260101-1234567"}, "must be among"),
             ({"releaseEnvironments": ["stg"], "tagSuffix": "nope"}, "tag suffix"),
-            ({"environment": "qa", "faroBranch": "main"}, "must be one of"),
+            ({"environment": "qa", "faroBranch": "main"}, "must be among"),
+            ({"faroBranch": "main", "faroEnvironments": []}, "Pick at least one Faro environment"),
             ({"asahBranch": "main", "releaseEnvironments": ["stg"], "version": "1.0.1"},
              "only created for PRD"),
             ({"asahBranch": "main", "releaseEnvironments": ["prd"], "version": "1.0.0"},
@@ -330,3 +331,60 @@ class SecurityTest(AppTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FaroEnvironmentsTest(AppTestCase):
+
+    def faro_calls(self):
+        return [
+            (call["job"], call["params"].get("ENVIRONMENT"))
+            for call in self.fakes.calls if call.get("job") in ("build-faro", "deploy-faro")
+        ]
+
+    def test_environments_are_built_and_deployed_one_after_the_other(self):
+        run = self.run_release(
+            {"faroBranch": "main", "faroEnvironments": ["int", "stg"], "mode": "faro"})
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(["stg", "int"], run["faroEnvironments"])
+        self.assertEqual(
+            [("build-faro", "stg"), ("deploy-faro", "stg"), ("build-faro", "prd"),
+             ("deploy-faro", "int")],
+            self.faro_calls())
+        self.assertLessEqual(
+            run["stages"]["faroDeploy-stg"]["finishedAt"],
+            run["stages"]["faroBuild-int"]["startedAt"])
+        self.assertEqual(
+            {"int": "registry.example.com/faro:prd-20260101-f000002",
+             "stg": "registry.example.com/faro:stg-20260101-f000001"},
+            run["faroImages"])
+
+        deploy_int = [
+            call for call in self.fakes.calls if call.get("job") == "deploy-faro"][1]
+
+        self.assertEqual(
+            {"ENVIRONMENT": "int", "IMAGE": "registry.example.com/faro:prd-20260101-f000002"},
+            deploy_int["params"])
+
+    def test_a_failure_stops_the_next_environments(self):
+        run = self.run_release(
+            {"faroBranch": "broken-prd", "faroEnvironments": ["stg", "int", "prd"],
+             "mode": "faro"})
+
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("success", run["stages"]["faroDeploy-stg"]["status"])
+        self.assertEqual("failed", run["stages"]["faroBuild-int"]["status"])
+        self.assertEqual("skipped", run["stages"]["faroDeploy-int"]["status"])
+        self.assertEqual("skipped", run["stages"]["faroBuild-prd"]["status"])
+        self.assertEqual(
+            [("build-faro", "stg"), ("deploy-faro", "stg"), ("build-faro", "prd")],
+            self.faro_calls())
+
+    def test_prd_tag_points_at_the_prd_build(self):
+        run = self.run_release(
+            {"faroBranch": "main", "faroEnvironments": ["stg", "prd"], "mode": "faro",
+             "version": "2.0.0"})
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(
+            f"{2:040x}", self.gh_state_data()["tags"]["example-org/faro:faro-v2.0.0"])
