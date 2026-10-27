@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 
 LOG_TAIL_CHARS = 60_000
+ARGOCD_POLL_SECONDS = float(os.environ.get("LDP_ARGOCD_POLL_SECONDS", "30"))
 MERGE_POLL_SECONDS = float(os.environ.get("LDP_MERGE_POLL_SECONDS", "60"))
 POLL_RETRIES = 10
 POLL_SECONDS = float(os.environ.get("LDP_POLL_SECONDS", "5"))
@@ -1804,9 +1805,11 @@ def wait_for_merge(run, stage_name, pull_request_url):
 
 def wait_for_rollout_confirmation(run):
 
-    # Until there is an Argo CD token to check the apps, a person confirms
-    # the rollout from the page. Environments deployed by the same Argo CD
-    # instance share one link.
+    # Environments with an Argo CD token are checked automatically; the
+    # others wait for a person to confirm. The button always works, as an
+    # override.
+
+    from . import argocd
 
     search = settings["argocd.search"]
     instances = {}
@@ -1821,18 +1824,96 @@ def wait_for_rollout_confirmation(run):
             run, "rollout", f"Argo CD ({', '.join(environments)})",
             f"{url}/applications?search={urllib.parse.quote(search)}")
 
-    update_stage(
-        run, "rollout",
-        why=f"Check in Argo CD that the {search} apps for "
-            f"{list_environments(run['releaseEnvironments'])} run tag suffix "
-            f"{run['tagSuffix']} and are Healthy, then confirm")
+    automatic = [
+        environment for environment in run["releaseEnvironments"]
+        if environment in argocd.watched(settings)
+    ]
+    manual = [
+        environment for environment in run["releaseEnvironments"]
+        if environment not in automatic
+    ]
+
+    manual_note = ""
+
+    if manual:
+        manual_note = (
+            f"Check in Argo CD that the {search} apps for {list_environments(manual)} "
+            f"run tag suffix {run['tagSuffix']} and are Healthy, then confirm.")
+
+    if not automatic:
+        update_stage(run, "rollout", why=manual_note)
+
+    last_summaries = {}
 
     while not run["rolloutConfirmed"]:
-        if sleep_unless_cancelled(run, 1):
+        if automatic:
+            states = rollout_states(automatic, run)
+
+            for name, status, summary in states:
+                if last_summaries.get(name) != (status, summary):
+                    append_log(
+                        run, "rollout",
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} {name}: {status}, {summary}\n")
+
+                    last_summaries[name] = (status, summary)
+
+            failed = [(name, summary) for name, status, summary in states if status == "failed"]
+
+            if failed:
+                raise RuntimeError(
+                    "The rollout failed in Argo CD: " +
+                    "; ".join(f"{name}: {summary}" for name, summary in failed))
+
+            pending = [name for name, status, _ in states if status not in ("done", "superseded")]
+
+            if not pending and not manual:
+                for name, status, summary in states:
+                    if status == "superseded":
+                        append_log(run, "rollout", f"Warning: {name} was {summary}\n")
+
+                append_log(
+                    run, "rollout",
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed by Argo CD\n")
+
+                return None
+
+            checked = f"Checking {list_environments(automatic)} in Argo CD"
+
+            if pending:
+                checked += f": waiting for {', '.join(pending)}"
+            else:
+                checked += ": done"
+
+            update_stage(
+                run, "rollout",
+                why=" ".join(part for part in (checked + ".", manual_note) if part))
+
+        if sleep_unless_cancelled(run, ARGOCD_POLL_SECONDS):
             return "ABORTED"
 
     append_log(
-        run, "rollout", f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed\n")
+        run, "rollout", f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed by hand\n")
+
+
+def rollout_states(environments, run):
+    from . import argocd
+
+    states = []
+
+    for environment in environments:
+        merge = run["developMerge"]
+
+        if environment in settings["charts.production.environments"]:
+            merge = run["productionMerge"]
+
+        try:
+            states.extend(
+                argocd.environment_states(environment, merge["commit"], run, settings))
+        except (OSError, ValueError, urllib.error.URLError) as exception:
+            states.append(
+                (environment.upper(), "waiting", f"Argo CD is not reachable ({exception})"))
+
+    return states
 
 
 def with_retries(run, stage_name, function):

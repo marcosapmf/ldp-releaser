@@ -34,7 +34,11 @@ PERSONAL_SCHEMA = {
 }
 
 TEAM_SCHEMA = {
+    "argocd.applications": "table",
+    "argocd.image_name": "str",
+    "argocd.project": "str",
     "argocd.search": "str",
+    "argocd.tokens": "table",
     "argocd.urls": "url_table",
     "asah.branch_parameter": "str",
     "asah.build_job": "str",
@@ -85,6 +89,7 @@ TEAM_SCHEMA = {
 }
 
 OPTIONAL_KEYS = {
+    "argocd.applications", "argocd.image_name", "argocd.project", "argocd.tokens",
     "asah.checkout", "asah.composer_directory", "asah.composer_script",
     "charts.merge.checks", "charts.merge.develop_method",
     "charts.merge.production_method",
@@ -394,6 +399,15 @@ def validate_team(team):
                 problems.append(
                     f"gcloud.environments.{environment} names unknown "
                     f"configurations: {', '.join(unknown)}")
+
+    for key in ("argocd.applications", "argocd.tokens"):
+        unknown = set(get_value(team, key) or {}) - environments
+
+        if unknown:
+            problems.append(f"{key} has unknown environments: {', '.join(sorted(unknown))}")
+
+    if get_value(team, "argocd.applications") and not get_value(team, "argocd.image_name"):
+        problems.append("argocd.image_name is needed to check rollouts automatically")
 
     merge_methods = [
         key for key in ("charts.merge.develop_method", "charts.merge.production_method")

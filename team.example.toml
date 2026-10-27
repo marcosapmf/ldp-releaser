@@ -78,12 +78,23 @@ discarded_resolution = "Discarded"
 
 [argocd]
 search = "asah"
+# project = "asah"                  # Argo CD project, when it differs from search
+image_name = "registry.example.com/asah"   # images whose tag must carry the new suffix
 
 # Release environment -> Argo CD instance that deploys it.
 [argocd.urls]
 stg = "https://argocd.staging.example.com"
 int = "https://argocd.example.com"
 prd = "https://argocd.example.com"
+
+# Optional: check rollouts automatically. Environments with applications
+# and a read-only token (applications, get) are confirmed by Argo CD; the
+# others keep the Confirm rollout button.
+[argocd.applications]
+stg = ["staging-cluster-asah"]
+
+[argocd.tokens]
+stg = ""                            # read-only Argo CD API token, kept in the private team file
 
 [release]
 prd_environment = "prd"     # a run touching it is a PRD release: tags + auto-close

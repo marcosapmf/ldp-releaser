@@ -8,12 +8,34 @@ import threading
 import time
 import urllib.error
 
-from . import composer, gcloud
+from . import argocd, composer, gcloud
 
 CACHE_SECONDS = 60
 
 cache = {"checkedAt": 0, "checks": []}
 cache_lock = threading.Lock()
+
+
+def check_argocd(settings):
+
+    # The rollout check reads applications with each environment's token.
+
+    problems = []
+
+    for environment in sorted(argocd.watched(settings)):
+        base = settings["argocd.urls"][environment].rstrip("/")
+        project = settings["argocd.project"] or settings["argocd.search"]
+
+        try:
+            argocd.fetch(
+                settings, f"{base}/api/v1/applications?projects={project}",
+                settings["argocd.tokens"][environment])
+        except urllib.error.HTTPError as exception:
+            problems.append(f"the {environment} token was refused ({exception.code})")
+        except (OSError, urllib.error.URLError) as exception:
+            problems.append(f"Argo CD for {environment} is not reachable ({exception})")
+
+    return "; ".join(problems) or None
 
 
 def check_charts(settings):
@@ -115,6 +137,10 @@ def checks(jenkins, jira, settings, refresh=False):
         results.append(
             result("Asah clone", "; ".join(composer.problems(settings)) or None,
                    required=False))
+
+    if argocd.watched(settings):
+        results.append(
+            result("Argo CD", check_argocd(settings), required=False))
 
     if gcloud.configured(settings):
         results.append(

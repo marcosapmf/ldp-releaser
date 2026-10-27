@@ -143,7 +143,7 @@ class ReleaseTest(AppTestCase):
         self.assertEqual(f"{1:040x}", tags["example-org/faro:faro-v1.2.3"])
 
         self.assertEqual(
-            ["Argo CD (STG)", "Argo CD (INT, PRD)"],
+            ["Argo CD (STG)", "Argo CD (INT)", "Argo CD (PRD)"],
             [link["label"] for link in run["stages"]["rollout"]["links"]])
 
         deploy = next(call for call in self.fakes.calls if call.get("job") == "deploy-faro")

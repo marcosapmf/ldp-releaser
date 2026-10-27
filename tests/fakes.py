@@ -38,6 +38,14 @@ class FakeServices:
         self.slack = []
         self.ticket_numbers = itertools.count(101)
 
+        # Argo CD: applications read their live state from the charts
+        # origin (set by the harness). Per application, tests can delay the
+        # sync (lag: looks before it catches up; syncing: looks with a sync
+        # still running), fail the upgrade hook or report unhealthy pods.
+
+        self.argocd_apps = {}
+        self.argocd_origin = None
+
         services = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -79,6 +87,15 @@ class FakeServices:
 
             return send(request, 200, {"ok": True})
 
+        argocd_path = url.path.removeprefix("/prd-instance")
+
+        if argocd_path.startswith("/api/v1/"):
+            if request.headers.get("Authorization") != "Bearer fake-argocd-token":
+                return send(request, 401, {"error": "invalid token"})
+
+            with self.lock:
+                return self.argocd(request, argocd_path)
+
         if request.headers.get("Authorization") not in AUTHORIZATIONS:
             return send(request, 401, {"error": "unauthorized"})
 
@@ -87,6 +104,81 @@ class FakeServices:
                 return self.jira(request, method, url, body)
 
             return self.jenkins(request, method, url, body)
+
+    def argocd(self, request, path):
+        if path == "/api/v1/applications":
+            return send(
+                request, 200,
+                {"items": [self.argocd_application(name) for name in self.argocd_apps]})
+
+        name = path.removeprefix("/api/v1/applications/").removesuffix("/resource-tree")
+
+        if path.endswith("/resource-tree") and name in self.argocd_apps:
+            app = self.argocd_apps[name]
+            pods = [
+                {"health": {"status": "Healthy"}, "info": [{"name": "Status Reason", "value": "Running"}],
+                 "kind": "Pod", "name": f"{name}-backend-1"},
+            ]
+
+            if app.get("health") == "Degraded":
+                pods.append(
+                    {"health": {"status": "Degraded"},
+                     "info": [{"name": "Status Reason", "value": "CrashLoopBackOff"}],
+                     "kind": "Pod", "name": f"{name}-publisher-1"})
+
+            return send(request, 200, {"nodes": pods})
+
+        send(request, 404, {"error": path})
+
+    def argocd_application(self, name):
+        app = self.argocd_apps[name]
+        app["looks"] = app.get("looks", 0) + 1
+
+        revision = git_output(self.argocd_origin, "rev-parse", f"refs/heads/{app['branch']}")
+
+        # A lagging application keeps the revision it had at its first look.
+
+        if app.get("lag", 0) >= app["looks"]:
+            revision = app.setdefault("stuckAt", revision)
+
+        values = git_output(self.argocd_origin, "show", f"{revision}:{app['file']}")
+        suffix = values.split('tagSuffix: "', 1)[1].split('"', 1)[0]
+
+        hook = app.get("hook", "Succeeded")
+        phase = "Succeeded"
+
+        if hook == "Failed":
+            phase = "Failed"
+
+        # A sync still running for the first looks (syncing: how many).
+
+        if app.get("syncing", 0) >= app["looks"]:
+            phase = "Running"
+
+        return {
+            "metadata": {"name": name},
+            "status": {
+                "health": {"status": app.get("health", "Healthy")},
+                "operationState": {
+                    "message": "one or more synchronization tasks completed unsuccessfully",
+                    "phase": phase,
+                    "syncResult": {
+                        "resources": [{
+                            "hookPhase": hook, "hookType": "PreSync", "kind": "Job",
+                            "message": "Job has reached the specified backoff limit",
+                            "name": "osbasahupgrade",
+                        }],
+                        "revision": revision,
+                    },
+                },
+                "summary": {"images": [
+                    f"registry.example.com/asah:backend-{suffix}",
+                    f"registry.example.com/asah:publisher-{suffix}",
+                    "registry.example.com/sidecar:1.0",
+                ]},
+                "sync": {"revision": revision, "status": "Synced"},
+            },
+        }
 
     def jenkins(self, request, method, url, body):
         path = url.path
@@ -415,6 +507,14 @@ class FakeServices:
                     f"{environment}-20260101-f00{number:04d}\n")
 
         return "".join(lines) + "\x1b[1mdone\x1b[0m\n"
+
+
+def git_output(repository, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "--git-dir", str(repository), *args], capture_output=True, check=True,
+        text=True).stdout.strip()
 
 
 def send(request, status, payload, headers=None):

@@ -87,11 +87,20 @@ discarded_resolution = "Discarded"
 
 [argocd]
 search = "asah"
+image_name = "registry.example.com/asah"
 
 [argocd.urls]
-stg = "https://argocd-staging.example"
+stg = "{url}"
 int = "https://argocd.example"
-prd = "https://argocd.example"
+prd = "{url}/prd-instance"
+
+[argocd.applications]
+stg = ["team-stg-asah"]
+prd = ["team-prd-asah-1", "team-prd-asah-2"]
+
+[argocd.tokens]
+stg = "fake-argocd-token"
+prd = "fake-argocd-token"
 
 [release]
 prd_environment = "prd"
@@ -186,6 +195,14 @@ class AppTestCase(unittest.TestCase):
         self.create_charts()
         self.create_asah()
         self.write_settings()
+
+        self.auto_confirm = True
+        self.fakes.argocd_origin = self.origin
+        self.fakes.argocd_apps = {
+            "team-prd-asah-1": {"branch": "production", "file": "deploy/prd.yaml"},
+            "team-prd-asah-2": {"branch": "production", "file": "deploy/prd.yaml"},
+            "team-stg-asah": {"branch": "develop", "file": "deploy/stg.yaml"},
+        }
         self.before_start()
         self.start_app()
 
@@ -290,6 +307,7 @@ class AppTestCase(unittest.TestCase):
             GIT_AUTHOR_NAME="Test",
             GIT_COMMITTER_EMAIL="test@example.com",
             GIT_COMMITTER_NAME="Test",
+            LDP_ARGOCD_POLL_SECONDS="0.2",
             LDP_LOGIN_POLL_SECONDS="0.2",
             LDP_MERGE_POLL_SECONDS="0.2",
             LDP_POLL_SECONDS="0.05",
@@ -365,7 +383,9 @@ class AppTestCase(unittest.TestCase):
 
             rollout = run["stages"].get("rollout")
 
-            if rollout and rollout["status"] == "running" and not run["rolloutConfirmed"]:
+            if (self.auto_confirm and rollout and rollout["status"] == "running" and
+                    not run["rolloutConfirmed"]):
+
                 self.call(f"/api/runs/{run_id}/confirm-rollout", {})
 
             time.sleep(0.1)

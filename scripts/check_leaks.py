@@ -26,6 +26,7 @@ GENERIC_PATTERNS = {
     "Atlassian API token": re.compile(r"ATATT[0-9A-Za-z_\-=]{20,}"),
     "GitHub token": re.compile(r"\bgh[oprsu]_[A-Za-z0-9]{20,}"),
     "Jenkins API token": re.compile(r"\b11[0-9a-f]{32}\b"),
+    "JSON Web Token": re.compile(r"\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}"),
     "Slack webhook": re.compile(r"hooks\.slack\.com/(?:services|triggers|workflows)/\S+"),
     "internal host name": re.compile(r"\b[\w-]+\.internal\.[a-z][\w.-]*\.[a-z]{2,}\b"),
     "private key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),

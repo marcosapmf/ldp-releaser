@@ -111,7 +111,14 @@ Each section of the form is optional; leave it empty to skip those steps.
    `charts.production.environments`): cherry-picks the merged commit onto
    the production branch, opens a pull request and waits for the merge.
 5. **Rollout confirmation**: links to the Argo CD instance of each
-   environment; you confirm once the apps run the new suffix and are Healthy.
+   environment. Environments with an Argo CD token in the team file are
+   checked automatically: the charts merge must be part of what Argo CD
+   synced, the sync hooks (such as the database upgrade job) must have
+   succeeded, every image must carry the new suffix, and the applications
+   must be Synced and Healthy. A failed hook or sync fails the step; a newer
+   release that replaced this one counts as done, with a warning. The other
+   environments wait for **Confirm rollout**, which also works as an
+   override.
 6. **Composer DAGs** (optional, when the team file has the Composer setup):
    uploads the DAGs of the released Asah commit to the gcloud configurations
    of the released environments, checking the gcloud login first (see
