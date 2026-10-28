@@ -360,44 +360,24 @@ def create_release_tickets(jira, run):
 
     summary = run["releaseSummary"]
 
-    account_id = jira.check()["accountId"]
-
     fields = {
-        "assignee": {"accountId": account_id},
+        "assignee": {"accountId": jira.check()["accountId"]},
         "components": [{"name": settings["jira.component"]}],
         "project": {"key": settings["jira.project"]},
         "summary": summary,
     }
 
-    task_key = jira.request(
-        "POST", "/rest/api/3/issue",
-        {
-            "fields": {
-                **fields,
-                "description": adf_paragraph(
-                    f"Release the Asah images with tag suffix "
-                    f"{run['tagSuffix']} to "
-                    f"{list_environments(run['releaseEnvironments'])}."),
-                "issuetype": {"name": settings["jira.task_type"]},
-            },
-        })["key"]
+    task_key, sprint = new_release_task(
+        jira, summary,
+        f"Release the Asah images with tag suffix {run['tagSuffix']} to "
+        f"{list_environments(run['releaseEnvironments'])}.")
 
     append_log(run, "jira", f"Created {task_key}: {summary}\n")
     add_stage_link(run, "jira", f"{task_key} (Task)", jira.issue_url(task_key))
     update_run(run, jiraTask=task_key)
 
-    sprints = jira.request(
-        "GET",
-        f"/rest/agile/1.0/board/{settings['jira.board_id']}/sprint"
-        f"?state=active")["values"]
-
-    if sprints:
-        jira.request(
-            "POST", f"/rest/agile/1.0/sprint/{sprints[0]['id']}/issue",
-            {"issues": [task_key]})
-
-        append_log(
-            run, "jira", f"Added {task_key} to sprint {sprints[0]['name']}\n")
+    if sprint:
+        append_log(run, "jira", f"Added {task_key} to sprint {sprint}\n")
     else:
         append_log(run, "jira", "No active sprint, so no sprint was set\n")
 
@@ -815,10 +795,14 @@ def list_environments(environments):
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def move_to_in_progress(jira, run, key, statuses_key):
+def move_to_in_progress(jira, run, key, statuses_key, log=None):
 
     # Some issue types reach In Progress through intermediate statuses, so
     # the configured path is followed from wherever the ticket is now.
+
+    if log is None:
+        def log(text):
+            append_log(run, "jira", text)
 
     status_names = list(settings[statuses_key])
 
@@ -830,7 +814,7 @@ def move_to_in_progress(jira, run, key, statuses_key):
     for status_name in status_names:
         jira.transition_to(key, status_name)
 
-        append_log(run, "jira", f"Moved {key} to {status_name}\n")
+        log(f"Moved {key} to {status_name}\n")
 
 
 def needs_production(run):
@@ -976,6 +960,39 @@ def open_production_pull_request(run):
                 branch, worktree))
 
 
+def new_release_task(jira, summary, description):
+
+    # Creates a release Task, assigned to the person, in the board's active
+    # sprint. Returns its key and the sprint name (None without a sprint).
+
+    task_key = jira.request(
+        "POST", "/rest/api/3/issue",
+        {
+            "fields": {
+                "assignee": {"accountId": jira.check()["accountId"]},
+                "components": [{"name": settings["jira.component"]}],
+                "description": adf_paragraph(description),
+                "issuetype": {"name": settings["jira.task_type"]},
+                "project": {"key": settings["jira.project"]},
+                "summary": summary,
+            },
+        })["key"]
+
+    sprints = jira.request(
+        "GET",
+        f"/rest/agile/1.0/board/{settings['jira.board_id']}/sprint"
+        f"?state=active")["values"]
+
+    if not sprints:
+        return task_key, None
+
+    jira.request(
+        "POST", f"/rest/agile/1.0/sprint/{sprints[0]['id']}/issue",
+        {"issues": [task_key]})
+
+    return task_key, sprints[0]["name"]
+
+
 def open_release_tickets(jira):
 
     # Any open release Task of the team's component can be picked up, by
@@ -1043,11 +1060,15 @@ def open_release_tickets(jira):
                 "key": issue["key"],
                 "status": fields["status"]["name"],
                 "summary": fields["summary"],
+                # Only the release's own Technical Task: others, such as a
+                # vulnerability fix, keep their own titles.
+
                 "technicalTasks": [
                     subtask["key"] for subtask in fields["subtasks"]
                     if subtask["fields"]["issuetype"]["name"] ==
                         settings["jira.technical_task_type"] and
-                    subtask["fields"]["status"]["name"] != closed_status
+                    subtask["fields"]["status"]["name"] != closed_status and
+                    subtask["fields"].get("summary", "").startswith(title_prefix)
                 ],
             })
 

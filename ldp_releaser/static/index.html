@@ -196,6 +196,14 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .stage-detail { color: var(--muted); font-size: 13px; }
 a { color: var(--accent); }
 details { margin-top: 6px; }
+.failure { border-left: 3px solid var(--fail); margin-top: 8px; padding: 2px 0 2px 12px; }
+.failure p { margin: 6px 0; }
+.failure ul { margin: 6px 0; padding-left: 20px; }
+.failure li { overflow-wrap: anywhere; }
+.failure .muted { color: var(--muted); font-size: 13px; }
+.table-wrap { overflow-x: auto; }
+.failure table { border-collapse: collapse; font-size: 13px; margin-top: 6px; width: 100%; }
+.failure th, .failure td { border-bottom: 1px solid var(--border); padding: 4px 8px 4px 0; text-align: left; vertical-align: top; }
 summary { color: var(--muted); cursor: pointer; font-size: 13px; }
 pre {
   background: var(--code-bg);
@@ -376,6 +384,7 @@ const faroBranchInput = document.getElementById("faro-branch");
 const faroHint = document.getElementById("faro-hint");
 const formError = document.getElementById("form-error");
 const expandedRuns = new Set();
+const openFailures = new Set();
 const openLogs = new Set();
 const releaseHint = document.getElementById("release-hint");
 const runsContainer = document.querySelector("main");
@@ -391,6 +400,7 @@ let loginState = {status: "idle"};
 let loginTimer = null;
 let runsNeedLogin = false;
 let lastRunsJson = "";
+let runsById = {};
 let setupBlocked = false;
 let openTickets = [];
 let ticketsLoaded = false;
@@ -860,6 +870,18 @@ function renderStage(run, name) {
     action = `<div style="margin-top:8px"><button data-gcloud-login="1" type="button">Log in to gcloud</button></div>`;
   }
 
+  let failure = "";
+
+  if (stage.status === "failed" && stage.url) {
+    const open = openFailures.has(key);
+
+    action = `<div style="margin-top:8px"><button class="secondary" data-failure="${name}" data-run="${run.id}" type="button">${open ? "Hide failure" : "Show failure"}</button></div>`;
+
+    if (open && stage.failure) {
+      failure = renderFailure(run, name, stage);
+    }
+  }
+
   let log = "";
 
   if (stage.log) {
@@ -874,8 +896,122 @@ function renderStage(run, name) {
       <span class="stage-detail">${details.join(" · ")}</span>
     </div>
     ${action}
+    ${failure}
     ${log}
   </div>`;
+}
+
+function fixLabel(fix) {
+  const cves = fix.cves.join(", ");
+
+  if (fix.kind === "update") {
+    return `Update <strong>${escapeHtml(fix.name)}</strong> to ${escapeHtml(fix.version)} (${escapeHtml(cves)})`;
+  }
+
+  return `Exclude <strong>${escapeHtml(fix.name)}</strong> from the runtime: an annotation processor that bundles ${escapeHtml(fix.bundles)} (${escapeHtml(cves)})`;
+}
+
+function renderFixes(run, name, stage) {
+  const explanation = stage.failure;
+  const parts = [];
+
+  if (explanation.fixes?.length) {
+    parts.push(`<p>Fixes, one commit each:</p><ul>${explanation.fixes.map(fix => `<li>${fixLabel(fix)}</li>`).join("")}</ul>`);
+  }
+
+  if (explanation.problems?.length) {
+    parts.push(`<p>Needs a person:</p><ul>${explanation.problems.map(problem => `<li>${escapeHtml(problem)}</li>`).join("")}</ul>`);
+  }
+
+  const fix = stage.fix;
+  const canApply = appConfig.fixesEnabled && name === "asahBuild" && explanation.fixes?.length;
+
+  if (canApply && (!fix || fix.status === "failed")) {
+    let label = "Apply fixes";
+
+    if (fix) {
+      label = "Try again";
+    }
+
+    parts.push(`<div style="margin-top:8px"><button data-apply-fixes="${run.id}" type="button">${label}</button></div>`);
+  }
+  else if (explanation.fixes?.length && !appConfig.fixesEnabled) {
+    parts.push(`<p class="muted">To apply them from here, add asah.dependency_file, asah.main_branch and jira.fix_security_level to the team file.</p>`);
+  }
+
+  if (fix) {
+    const links = fix.links.map(item => `<a href="${escapeHtml(item.url)}" rel="noopener" target="_blank">${escapeHtml(item.label)}</a>`);
+    const key = `${run.id}-${name}-fix`;
+
+    parts.push(`<div class="s-${fix.status}" style="align-items:center;display:flex;flex-wrap:wrap;gap:6px 10px;margin-top:8px">
+        <span class="stage-name">Applying fixes</span>
+        <span class="badge">${fix.status}</span>
+        <span class="stage-detail">${links.join(" · ")}</span>
+      </div>`);
+
+    if (fix.error) {
+      parts.push(`<div class="error">${escapeHtml(fix.error)}</div>`);
+    }
+
+    if (fix.log) {
+      parts.push(`<details data-key="${key}"${openLogs.has(key) ? " open" : ""}><summary>Output</summary><pre>${escapeHtml(fix.log)}</pre></details>`);
+    }
+  }
+
+  return parts.join("");
+}
+
+function renderFailure(run, name, stage) {
+  const explanation = stage.failure;
+  const parts = [];
+
+  if (explanation.step) {
+    parts.push(`<p>Failed at the Jenkins step <strong>${escapeHtml(explanation.step)}</strong>.</p>`);
+  }
+
+  if (explanation.scans.length) {
+    const scans = explanation.scans.map(scan => `<li><strong>${escapeHtml(scan.image)}</strong>: ${escapeHtml(scan.reason || "the vulnerability threshold check failed")}</li>`);
+
+    parts.push(`<p>The image scan blocked ${explanation.scans.length} image(s):</p><ul>${scans.join("")}</ul>`);
+  }
+
+  if (explanation.scans.length && explanation.comparedWith) {
+    const compared = `<a href="${escapeHtml(explanation.comparedWith.url)}" rel="noopener" target="_blank">#${explanation.comparedWith.number}</a>`;
+
+    if (explanation.newVulnerabilities.length) {
+      const rows = explanation.newVulnerabilities.map(item => `<tr>
+          <td>${escapeHtml(item.id)}</td>
+          <td>${escapeHtml(item.severity)}</td>
+          <td>${escapeHtml(item.package)} ${escapeHtml(item.version)}</td>
+          <td>${escapeHtml(item.fix)}</td>
+          <td>${escapeHtml(item.published)}</td>
+          <td>${escapeHtml(item.images.join(", "))}</td>
+        </tr>`);
+
+      parts.push(`<p>Vulnerabilities that were not in the last successful build (${compared}):</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>ID</th><th>Severity</th><th>Package</th><th>Fix</th><th>Published</th><th>Images</th></tr></thead>
+          <tbody>${rows.join("")}</tbody>
+        </table></div>`);
+    }
+    else {
+      parts.push(`<p class="muted">Every vulnerability was already in the last successful build (${compared}), so the scan policy itself may have changed.</p>`);
+    }
+  }
+
+  parts.push(renderFixes(run, name, stage));
+
+  if (explanation.errors.length) {
+    parts.push(`<p>Errors in the log:</p><pre>${escapeHtml(explanation.errors.join("\n"))}</pre>`);
+  }
+
+  if (!parts.length) {
+    parts.push(`<p class="muted">No error lines were recognized in the log.</p>`);
+  }
+
+  parts.push(`<p class="muted"><a href="${escapeHtml(stage.url)}console" rel="noopener" target="_blank">Full console log</a></p>`);
+
+  return `<div class="failure">${parts.join("")}</div>`;
 }
 
 function renderRun(run) {
@@ -992,6 +1128,8 @@ async function refreshRuns() {
     lastRunsJson = json;
 
     const runs = JSON.parse(json);
+
+    runsById = Object.fromEntries(runs.map(run => [run.id, run]));
 
     if (!runs.length) {
       return;
@@ -1126,6 +1264,67 @@ runsContainer.addEventListener("click", async event => {
     }
     else {
       expandedRuns.add(id);
+    }
+
+    lastRunsJson = "";
+
+    refreshRuns();
+
+    return;
+  }
+
+  const failureStage = event.target.dataset.failure;
+
+  if (failureStage) {
+    const runId = event.target.dataset.run;
+    const key = `${runId}-${failureStage}`;
+
+    if (openFailures.has(key)) {
+      openFailures.delete(key);
+    }
+    else {
+      event.target.disabled = true;
+      event.target.textContent = "Reading the build log…";
+
+      const response = await fetch(`/api/runs/${runId}/stages/${failureStage}/failure`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+      if (!response.ok) {
+        event.target.disabled = false;
+        event.target.textContent = "Show failure";
+
+        alert((await response.json()).error || `Request failed (${response.status})`);
+
+        return;
+      }
+
+      openFailures.add(key);
+    }
+
+    lastRunsJson = "";
+
+    refreshRuns();
+
+    return;
+  }
+
+  const fixRunId = event.target.dataset.applyFixes;
+
+  if (fixRunId) {
+    const run = runsById[fixRunId];
+    const bases = [...new Set([appConfig.mainBranch, run.asahBranch])].join(" and ");
+
+    if (!confirm(`Create a Jira subtask under the release Task, commit each fix and open pull requests to ${bases} from your fork?`)) {
+      return;
+    }
+
+    event.target.disabled = true;
+
+    const response = await fetch(`/api/runs/${fixRunId}/stages/asahBuild/fix`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+    if (!response.ok) {
+      event.target.disabled = false;
+
+      alert((await response.json()).error || `Request failed (${response.status})`);
     }
 
     lastRunsJson = "";

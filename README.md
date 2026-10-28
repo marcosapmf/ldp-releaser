@@ -135,6 +135,24 @@ release that did not finish), the form asks whether to reuse them or to
 create new ones and close the old ones as discarded. Tickets of the whole
 team are offered, with their assignee.
 
+A failed Jenkins build shows **Show failure**: it reads the build log and
+lists the pipeline step that failed and the error lines. When an image scan
+(twistcli) blocked the build, it also lists the vulnerabilities that were
+not in the job's last successful build, which are usually the ones that
+started failing it, even when the code did not change.
+
+For a failed Asah build, it also plans the fixes: raise the vulnerable
+library to the closest fixed version, and exclude annotation processors that
+bundle a copy of it. **Apply fixes** creates a subtask under the open release
+Task (or a new Task), commits each fix on its own in a temporary worktree, and
+opens a pull request from your fork to `asah.main_branch` and to the
+released branch. Anything it cannot fix is listed in the pull request for a
+person to handle. The subtask gets the `jira.fix_security_level` security
+level, and only once Jira confirms it does its title name the
+vulnerabilities; the commits and pull requests never do. The button needs
+`asah.dependency_file`, `asah.main_branch` and `jira.fix_security_level` in
+the team file.
+
 Runs are saved in `~/.local/share/ldp-releaser/runs/`. If the server stops,
 the next start resumes unfinished runs: Jenkins builds are re-attached and
 waits for merges, the rollout or a decision start again. A run that stopped

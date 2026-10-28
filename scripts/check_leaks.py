@@ -36,7 +36,7 @@ GENERIC_PATTERNS = {
 
 COMMON_VALUES = {
     "closed", "completed", "develop", "discarded", "in progress", "merge",
-    "prisma cloud / code analysis", "production", "rebase",
+    "prisma cloud / code analysis", "private", "production", "rebase",
     "selected for development", "squash", "tagsuffix", "task", "technical task",
 }
 

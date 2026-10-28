@@ -19,6 +19,8 @@ repository = "example-org/asah"                       # where the version tag is
 image_pattern = 'docker push (registry.example.com/asah:\S+)'
 tag_suffix_pattern = '\d{8}-[0-9a-f]{7,40}'           # suffix shared by the build's images
 tag_format = "{version}"
+dependency_file = "common/build.gradle"               # optional: where the fix button adds forces and excludes
+main_branch = "main"                                  # optional: fixes go to this branch and to the released one
 
 [faro]
 build_job = "build-faro"
@@ -67,6 +69,7 @@ board_id = 1
 component = "Platform"
 task_type = "Task"
 technical_task_type = "Technical Task"
+fix_security_level = "Private"                        # optional, with asah.dependency_file: vulnerability fix tickets get it
 title = "Release {environments} Environment{plural}"
 
 [jira.workflow]

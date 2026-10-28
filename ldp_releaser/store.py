@@ -39,6 +39,18 @@ def load():
         except (OSError, ValueError):
             continue
 
+        # Applying fixes changes Jira, git and GitHub, so it is not resumed.
+
+        for stage in run["stages"].values():
+            fix = stage.get("fix")
+
+            if fix and fix["status"] == "running":
+                fix["error"] = (
+                    "LDP Releaser stopped while applying the fixes. Check the links "
+                    "above before trying again, which starts over with a new subtask.")
+                fix["finishedAt"] = time.time()
+                fix["status"] = "failed"
+
         with release.runs_lock:
             release.runs[run["id"]] = run
 

@@ -44,7 +44,9 @@ TEAM_SCHEMA = {
     "asah.build_job": "str",
     "asah.composer_directory": "str",
     "asah.composer_script": "str",
+    "asah.dependency_file": "str",
     "asah.image_pattern": "pattern",
+    "asah.main_branch": "str",
     "asah.repository": "repository",
     "asah.tag_format": "tag_format",
     "asah.tag_suffix_pattern": "pattern",
@@ -74,6 +76,7 @@ TEAM_SCHEMA = {
     "jenkins.url": "url",
     "jira.board_id": "int",
     "jira.component": "str",
+    "jira.fix_security_level": "str",
     "jira.project": "str",
     "jira.task_type": "str",
     "jira.technical_task_type": "str",
@@ -91,6 +94,7 @@ TEAM_SCHEMA = {
 OPTIONAL_KEYS = {
     "argocd.applications", "argocd.image_name", "argocd.project", "argocd.tokens",
     "asah.checkout", "asah.composer_directory", "asah.composer_script",
+    "asah.dependency_file", "asah.main_branch", "jira.fix_security_level",
     "charts.merge.checks", "charts.merge.develop_method",
     "charts.merge.production_method",
     "gcloud.configurations", "gcloud.environments", "server.port",
@@ -426,6 +430,12 @@ def validate_team(team):
     if len(composer_keys) == 1:
         problems.append(
             "asah.composer_directory and asah.composer_script go together")
+
+    fix_keys = ("asah.dependency_file", "asah.main_branch", "jira.fix_security_level")
+
+    if len([key for key in fix_keys if get_value(team, key)]) not in (0, len(fix_keys)):
+        problems.append(
+            "asah.dependency_file, asah.main_branch and jira.fix_security_level go together")
 
     prd_environment = get_value(team, "release.prd_environment")
 

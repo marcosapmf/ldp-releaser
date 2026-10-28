@@ -31,6 +31,8 @@ composer_script = "scripts/upload_dag.sh"
 branch_parameter = "BRANCH"
 repository = "example-org/asah"
 image_pattern = 'docker push (registry.example.com/asah:\\S+)'
+dependency_file = "common/build.gradle"
+main_branch = "main"
 tag_suffix_pattern = '\\d{{8}}-[0-9a-f]{{7,40}}'
 tag_format = "{{version}}"
 
@@ -76,6 +78,7 @@ board_id = 1
 component = "Platform"
 task_type = "Task"
 technical_task_type = "Technical Task"
+fix_security_level = "Private"
 title = "Release {{environments}} Environment{{plural}}"
 
 [jira.workflow]

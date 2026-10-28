@@ -29,6 +29,7 @@ class FakeServices:
         self.builds = {}
         self.calls = []
         self.held = True
+        self.inherit_security = False
         self.issues = {}
         self.lock = threading.Lock()
         self.numbers = {}
@@ -71,6 +72,7 @@ class FakeServices:
         self.issues[key] = {
             "assignee": assignee,
             "parent": parent,
+            "security": None,
             "status": status,
             "summary": summary,
             "type": issue_type,
@@ -218,7 +220,7 @@ class FakeServices:
 
         match = re.fullmatch(
             rf"/job/{FOLDER}/job/([\w-]+)/(\d+)/"
-            rf"(api/json|consoleText|logText/progressiveText|stop)",
+            rf"(api/json|artifact/.+|consoleText|logText/progressiveText|stop)",
             path)
 
         if match:
@@ -235,7 +237,20 @@ class FakeServices:
                 for (job, _), build in self.builds.items() if job == match[1]
             ]
 
-            return send(request, 200, {"builds": builds})
+            successes = [
+                number for (job, number), build in self.builds.items()
+                if job == match[1] and build["result"] == "SUCCESS"
+            ]
+
+            last_success = None
+
+            if successes:
+                last_success = {
+                    "number": max(successes),
+                    "url": f"{self.url}/job/{FOLDER}/job/{match[1]}/{max(successes)}/",
+                }
+
+            return send(request, 200, {"builds": builds, "lastSuccessfulBuild": last_success})
 
         send(request, 404, {"error": path})
 
@@ -262,14 +277,29 @@ class FakeServices:
             elif build["polls"] >= 4:
                 build["result"] = "SUCCESS"
 
-                if branch == "broken" or (
+                if branch in ("broken", "vulnerable") or (
                         branch == "broken-prd" and build["params"].get("ENVIRONMENT") == "prd"):
 
                     build["result"] = "FAILURE"
 
+            artifacts = []
+
+            if build["job"] == "build-asah" and build["result"]:
+                artifacts = [
+                    {"relativePath": f"vulnerabilities_{service}.json"}
+                    for service in ("backend", "publisher")
+                ]
+
             return send(
                 request, 200,
-                {"building": build["result"] is None, "result": build["result"]})
+                {
+                    "artifacts": artifacts,
+                    "building": build["result"] is None,
+                    "result": build["result"],
+                })
+
+        if action.startswith("artifact/"):
+            return send(request, 200, self.scan_report(build))
 
         text = self.log(build)
 
@@ -342,6 +372,8 @@ class FakeServices:
                           "displayName": ME["displayName"]},
                 parent=(fields.get("parent") or {}).get("key"))
 
+            self.set_security(key, fields)
+
             self.calls.append({"jira": "create", "key": key, "fields": fields})
 
             return send(request, 201, {"key": key})
@@ -360,7 +392,12 @@ class FakeServices:
         match = re.fullmatch(r"/rest/api/3/issue/([\w-]+)", path)
 
         if match and method == "PUT":
-            self.issues[match[1]]["summary"] = payload["fields"]["summary"]
+            fields = payload["fields"]
+
+            if "summary" in fields:
+                self.issues[match[1]]["summary"] = fields["summary"]
+
+            self.set_security(match[1], fields)
 
             return send(request, 204, None)
 
@@ -371,6 +408,7 @@ class FakeServices:
                 request, 200,
                 {
                     "fields": {
+                        "security": issue["security"] and {"name": issue["security"]},
                         "status": {"name": issue["status"]},
                         "summary": issue["summary"],
                     },
@@ -401,6 +439,7 @@ class FakeServices:
                     "fields": {
                         "issuetype": {"name": subtask["type"]},
                         "status": {"name": subtask["status"]},
+                        "summary": subtask["summary"],
                     },
                     "key": subtask_key,
                 }
@@ -441,6 +480,18 @@ class FakeServices:
             (payload.get("fields") or {}).get("resolution", {}).get("name"))
 
         return send(request, 204, None)
+
+    def set_security(self, key, fields):
+
+        # With inherit_security set, Jira keeps subtasks at their parent's
+        # level whatever is asked, as some projects are configured to.
+
+        issue = self.issues[key]
+
+        if self.inherit_security and issue["parent"]:
+            issue["security"] = self.issues[issue["parent"]]["security"]
+        elif "security" in fields:
+            issue["security"] = fields["security"]["name"]
 
     def release_builds(self):
         with self.lock:
@@ -506,7 +557,79 @@ class FakeServices:
                     f"+ docker push registry.example.com/faro:"
                     f"{environment}-20260101-f00{number:04d}\n")
 
+        if build["job"] == "build-asah" and build["result"]:
+            lines.extend(self.scan_log(build))
+
         return "".join(lines) + "\x1b[1mdone\x1b[0m\n"
+
+    def scan_report(self, build):
+
+        # The report twistcli archives: the full fix versions and the jar
+        # each vulnerability is in. The new one is in the library itself, in
+        # an annotation processor and in a library needed at runtime.
+
+        vulnerabilities = [
+            {"id": "CVE-2020-0001", "packageName": "old-lib", "packagePath": "/app/lib/old-lib-1.0.jar",
+             "packageVersion": "1.0", "status": "fixed in 1.1"},
+        ]
+
+        if build["params"].get("BRANCH") == "vulnerable":
+            for version, jar in (
+                    ("2.0", "new-lib-2.0.jar"), ("1.5", "processor-lib-1.0.jar"),
+                    ("1.4", "runtime-lib-3.0.jar")):
+
+                vulnerabilities.append(
+                    {"id": "CVE-2026-0002", "packageName": "com.example_new-lib",
+                     "packagePath": f"/app/lib/{jar}", "packageVersion": version,
+                     "status": "fixed in 2.1, 1.9.5, 1.2.9"})
+
+        return {"results": [{"vulnerabilities": vulnerabilities}]}
+
+    def scan_log(self, build):
+
+        # The image scan step: every build has a known vulnerability, and
+        # the "vulnerable" branch also has a new one that blocks the build.
+        # A failed build ends like a Jenkins pipeline: the later steps are
+        # skipped and the error is reported.
+
+        branch = build["params"].get("BRANCH")
+        lines = ["[Pipeline] { (Compile)\n"]
+
+        if branch == "broken":
+            lines.append("* What went wrong:\nExecution failed for task ':compileJava'.\n\n")
+        else:
+            lines.append("[Pipeline] { (Image Scan)\n")
+
+            for service in ("backend", "publisher"):
+                lines.append(
+                    f"+ ./twistcli images scan --details registry.example.com/asah:"
+                    f"{service}-20260101-abcd{build['number']:03d}\n"
+                    f"| CVE-2020-0001 | high | 7.50 | old-lib | 1.0 | fixed in 1.1 | 100 days "
+                    f"| < 1 hour | old |\n")
+
+                result = "PASS"
+
+                if branch == "vulnerable":
+                    for version in ("2.0", "1.5", "1.4"):
+                        lines.append(
+                            f"| CVE-2026-0002 | \x1b[31;1mcritical\x1b[0m | 9.80 | "
+                            f"com.example_new-lib | {version} | fixed in 2.1, 1.9.5,... "
+                            f"| 1 days | < 1 hour | new |\n")
+
+                    lines.append(
+                        "Scan failed due to vulnerability policy violations: 3 vulnerabilities\n")
+
+                    result = "FAIL"
+
+                lines.append(f"Vulnerability threshold check results: {result}\n")
+
+        if build["result"] == "FAILURE":
+            lines.append(
+                "ha:////4AdN2NFD7avhjgOzjzcbivs04R5x=[Pipeline] { (Push Docker Images)\n"
+                'Stage "Push Docker Images" skipped due to earlier failure(s)\n'
+                "ERROR: The build failed.\n")
+
+        return lines
 
 
 def git_output(repository, *args):

@@ -8,7 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import composer, gcloud, health, release
+from . import composer, failure, fixes, gcloud, health, release
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 
@@ -101,6 +101,16 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._send_json(202, self.gcloud_login.state())
 
+        match = re.fullmatch(r"/api/runs/(\w+)/stages/([\w-]+)/failure", self.path)
+
+        if match:
+            return self._explain_failure(match.group(1), match.group(2))
+
+        match = re.fullmatch(r"/api/runs/(\w+)/stages/asahBuild/fix", self.path)
+
+        if match:
+            return self._fix(match.group(1))
+
         match = re.fullmatch(
             r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets)",
             self.path)
@@ -146,12 +156,61 @@ class Handler(BaseHTTPRequestHandler):
             "faroBuildEnvironments": settings["faro.build_environments"],
             "faroEnvironments": settings.faro_environments(),
             "faroTagFormat": settings["faro.tag_format"],
+            "fixesEnabled": fixes.enabled(settings),
+            "mainBranch": settings["asah.main_branch"],
             "jiraUrl": settings["jira.url"].rstrip("/"),
             "prdEnvironment": settings["release.prd_environment"],
             "productionBranch": settings["charts.production_branch"],
             "productionEnvironments": settings["charts.production.environments"],
             "title": settings["jira.title"],
         }
+
+    def _explain_failure(self, run_id, stage_name):
+        with release.runs_lock:
+            run = release.runs.get(run_id)
+            stage = (run or {}).get("stages", {}).get(stage_name)
+
+            if stage is None:
+                return self._send_json(404, {"error": "Step not found"})
+
+            if stage["status"] != "failed" or not stage["url"]:
+                return self._send_json(
+                    409, {"error": "The step is not a failed Jenkins build"})
+
+            build_url = stage["url"]
+
+        try:
+            explanation = failure.explain(self.jenkins, build_url)
+        except (OSError, urllib.error.URLError) as exception:
+            return self._send_json(
+                502, {"error": f"Could not read the build log: {exception}"})
+
+        release.update_stage(run, stage_name, failure=explanation)
+
+        return self._send_json(200, explanation)
+
+    def _fix(self, run_id):
+        if not fixes.enabled(self.settings):
+            return self._send_json(
+                409,
+                {
+                    "error": "Fixes need asah.dependency_file, asah.main_branch and "
+                             "jira.fix_security_level in the team file and asah.checkout "
+                             "in your settings",
+                })
+
+        with release.runs_lock:
+            run = release.runs.get(run_id)
+
+        if run is None:
+            return self._send_json(404, {"error": "Run not found"})
+
+        problem = fixes.start(self.jira, run, "asahBuild")
+
+        if problem:
+            return self._send_json(409, {"error": problem})
+
+        return self._send_json(202, {"id": run_id})
 
     def _is_local_host(self):
         return self.headers.get("Host") in (
