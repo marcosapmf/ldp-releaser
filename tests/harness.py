@@ -119,6 +119,20 @@ team-prd-2 = {{ project = "example-prd-2", region = "us-east1", lcp_project_id =
 [gcloud.environments]
 stg = ["team-stg"]
 prd = ["team-prd-1", "team-prd-2"]
+
+[dataflow]
+directory = "pipelines"
+build_command = ["bash", "build.sh"]
+publish_script = "publish.sh"
+templates = ["streaming-pipeline", "batch-pipeline"]
+streaming_template = "streaming-pipeline"
+streaming_script = "run_streaming.sh"
+job_prefix = "streaming-"
+
+[dataflow.configurations]
+team-stg = {{ dxp_projects = ["stg-a"], network = "net-stg", subnetwork = "subnet-stg" }}
+team-prd-1 = {{ dxp_projects = ["prd-a", "prd-b"], network = "net-prd-1", subnetwork = "subnet-prd-1" }}
+team-prd-2 = {{ dxp_projects = ["prd-c"], network = "net-prd-2", subnetwork = "subnet-prd-2" }}
 """
 
 PERSONAL = """
@@ -160,6 +174,42 @@ cd - > /dev/null
 
 gcloud composer environments storage dags import --environment "ac-$LCP_PROJECT_ID" \\
     --location "$REGION" --project "$PROJECT_ID" --source src/main/resources/ || exit 1
+"""
+
+
+# Stand-ins for the pipeline module: the build makes the JAR, publishing
+# needs it, and both scripts read the project and region from gcloud.
+
+BUILD_SCRIPT = """#!/bin/bash
+mkdir -p build/libs
+git rev-parse HEAD > build/libs/pipelines.jar
+"""
+
+PUBLISH_SCRIPT = """#!/bin/bash
+test -f build/libs/pipelines.jar || { echo "Unable to find the JAR"; exit 1; }
+
+PROJECT_ID=$(gcloud config get-value project)
+REGION=$(gcloud config get-value compute/region)
+
+gcloud dataflow flex-template build "gs://${PROJECT_ID}-dataflow/flex-templates/$1.json" \\
+    --image-gcr-path "${REGION}-docker.pkg.dev/${PROJECT_ID}/pipelines/$1:$2" \\
+    --jar build/libs/pipelines.jar
+"""
+
+STREAMING_SCRIPT = """#!/bin/bash
+UPDATE=()
+
+if [ "$1" = "--update" ]
+then
+    UPDATE=(--update)
+    shift
+fi
+
+PROJECT_ID=$(gcloud config get-value project)
+REGION=$(gcloud config get-value compute/region)
+
+gcloud dataflow flex-template run "streaming-$1" --network="$2" --subnetwork="$3" \\
+    --project="${PROJECT_ID}" --region="${REGION}" "${UPDATE[@]}"
 """
 
 
@@ -238,7 +288,7 @@ class AppTestCase(unittest.TestCase):
 
     def create_asah(self):
 
-        # The team's Asah repository with a Composer folder, and a personal
+        # The team's Asah repository with Composer and pipeline folders, and a personal
         # clone on another branch with uncommitted work, which must stay as
         # it is.
 
@@ -251,16 +301,17 @@ class AppTestCase(unittest.TestCase):
         git("clone", str(self.asah_origin), str(self.asah_checkout))
         git("checkout", "-b", "main", cwd=self.asah_checkout)
 
-        composer = self.asah_checkout / "composer"
-
         for path, content in {
-                "scripts/upload_dag.sh": UPLOAD_SCRIPT,
-                "src/main/python/a_dag.py": "# DAG a\n",
-                "src/main/python/b_dag.py": "# DAG b\n",
-                "src/main/resources/query.sql": "select 1;\n"}.items():
+                "composer/scripts/upload_dag.sh": UPLOAD_SCRIPT,
+                "composer/src/main/python/a_dag.py": "# DAG a\n",
+                "composer/src/main/python/b_dag.py": "# DAG b\n",
+                "composer/src/main/resources/query.sql": "select 1;\n",
+                "pipelines/build.sh": BUILD_SCRIPT,
+                "pipelines/publish.sh": PUBLISH_SCRIPT,
+                "pipelines/run_streaming.sh": STREAMING_SCRIPT}.items():
 
-            (composer / path).parent.mkdir(parents=True, exist_ok=True)
-            (composer / path).write_text(content)
+            (self.asah_checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.asah_checkout / path).write_text(content)
 
         git("add", "-A", cwd=self.asah_checkout)
         git("-c", "user.name=Test", "-c", "user.email=test@example.com",
@@ -311,6 +362,7 @@ class AppTestCase(unittest.TestCase):
             GIT_COMMITTER_EMAIL="test@example.com",
             GIT_COMMITTER_NAME="Test",
             LDP_ARGOCD_POLL_SECONDS="0.2",
+            LDP_DATAFLOW_POLL_SECONDS="0.05",
             LDP_LOGIN_POLL_SECONDS="0.2",
             LDP_MERGE_POLL_SECONDS="0.2",
             LDP_POLL_SECONDS="0.05",

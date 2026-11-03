@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.error
 
-from . import argocd, composer, gcloud
+from . import argocd, composer, dataflow, gcloud
 
 CACHE_SECONDS = 60
 
@@ -133,7 +133,7 @@ def checks(jenkins, jira, settings, refresh=False):
         result("Slack", check_slack(settings), required=False),
     ]
 
-    if composer.composer_enabled(settings):
+    if composer.composer_enabled(settings) or dataflow.enabled(settings):
         results.append(
             result("Asah clone", "; ".join(composer.problems(settings)) or None,
                    required=False))

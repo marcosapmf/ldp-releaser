@@ -278,6 +278,35 @@ class ResumeTest(AppTestCase):
         self.assertEqual(1, len(self.gh_state_data()["pulls"]))
         self.assertEqual(1, len([key for key, issue in self.fakes.issues.items() if issue["type"] == "Task"]))
 
+    def test_run_saved_before_a_new_step_resumes(self):
+        status, body = self.call(
+            "/api/runs", {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-fffffff"})
+        run_id = body["id"]
+
+        self.wait_until(run_id, lambda run: run["stages"]["developMerge"]["status"] == "running")
+
+        self.stop_app()
+
+        # Saved by an older version: no Dataflow step and no step order.
+
+        path = self.temp / "data" / "ldp-releaser" / "runs" / f"{run_id}.json"
+        run = json.loads(path.read_text())
+
+        for key in ("dataflow", "stageOrder"):
+            run.pop(key)
+
+        run["stages"].pop("dataflow")
+        path.write_text(json.dumps(run))
+
+        self.start_app()
+
+        (self.gh_state / "merge-now").touch()
+
+        run = self.wait(run_id, self.keep_tickets(run_id))
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual("skipped", run["stages"]["dataflow"]["status"])
+
     def test_restart_during_a_jira_change_fails_the_run(self):
         status, body = self.call(
             "/api/runs", {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-fffffff"})

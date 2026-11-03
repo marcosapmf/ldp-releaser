@@ -162,8 +162,6 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .code-form { display: flex; gap: 8px; margin-top: 10px; }
 .mode-hint { margin: 0 0 12px; }
 .check { align-items: center; display: flex; font-weight: 500; gap: 8px; }
-.coming-soon { text-align: center; padding: 40px 20px; }
-.coming-soon .hint { margin-top: 8px; }
 .code-form input { flex: 1; }
 .ticket-choices { display: grid; gap: 6px; }
 .ticket-choices label { align-items: baseline; display: flex; font-weight: 400; gap: 8px; margin: 0; }
@@ -229,7 +227,7 @@ pre {
     <button aria-selected="false" class="tab" data-tab="asah" role="tab" type="button">Asah</button>
     <button aria-selected="false" class="tab" data-tab="faro" role="tab" type="button">Faro</button>
     <button aria-selected="false" class="tab" data-tab="composer" hidden id="composer-tab" role="tab" type="button">Composer</button>
-    <button aria-selected="false" class="tab" data-tab="dataflow" role="tab" type="button">Dataflow</button>
+    <button aria-selected="false" class="tab" data-tab="dataflow" hidden id="dataflow-tab" role="tab" type="button">Dataflow</button>
     <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
   </nav>
 
@@ -282,14 +280,27 @@ pre {
           <div class="hint" style="margin:0 0 8px">A previous release was not completed. Reuse its tickets or start new ones?</div>
           <div class="ticket-choices" id="ticket-choices"></div>
         </div>
-        <div hidden id="composer-option-field">
-          <label class="check"><input id="composer-option" type="checkbox">Upload the Composer DAGs after the rollout</label>
-          <div class="hint" id="composer-option-hint"></div>
-        </div>
         <div id="tag-suffix-field">
           <label for="tag-suffix">Tag suffix</label>
           <input id="tag-suffix" autocomplete="off" placeholder="e.g. 20260101-abc1234" type="text">
           <div class="hint">Only used when no Asah branch is built; otherwise the suffix comes from the build's images.</div>
+        </div>
+      </fieldset>
+
+      <fieldset hidden id="composer-option-field">
+        <legend>Composer DAGs</legend>
+        <div>
+          <label class="check"><input id="composer-option" type="checkbox">Upload the Composer DAGs after the rollout</label>
+          <div class="hint" id="composer-option-hint"></div>
+        </div>
+      </fieldset>
+
+      <fieldset hidden id="dataflow-option-field">
+        <legend>Dataflow</legend>
+        <div>
+          <label>Templates to deploy after the Composer DAGs</label>
+          <div class="choices" id="dataflow-option-templates"></div>
+          <div class="hint" id="dataflow-option-hint"></div>
         </div>
       </fieldset>
 
@@ -352,10 +363,32 @@ pre {
   </div>
 
   <div hidden id="dataflow-view">
-  <section class="card coming-soon">
-    <strong>Dataflow releases are coming soon.</strong>
-    <p class="hint">This tab will release the Dataflow jobs. Nothing runs from here yet.</p>
+  <section class="card">
+    <form id="dataflow-form">
+      <fieldset>
+        <legend>Dataflow</legend>
+        <div>
+          <label>Environments</label>
+          <div class="choices" id="dataflow-environments"></div>
+        </div>
+        <div>
+          <label>Templates</label>
+          <div class="choices" id="dataflow-templates"></div>
+          <div class="hint" id="dataflow-hint"></div>
+        </div>
+        <div>
+          <label for="dataflow-ref">Asah version</label>
+          <input id="dataflow-ref" list="asah-branches" autocomplete="off" placeholder="branch, tag or commit, e.g. release-1.2.x" type="text">
+          <div class="hint">The pipelines are built from this version of the Asah repository, not from your own checkout. The template version is its tag suffix (commit date and short hash).</div>
+        </div>
+      </fieldset>
+      <div><button id="dataflow-submit" type="submit">Deploy Dataflow</button></div>
+      <div class="form-error" id="dataflow-error"></div>
+    </form>
   </section>
+
+  <h2 id="dataflow-title">Last Dataflow run</h2>
+  <div id="dataflow-run"><p class="empty">No Dataflow runs yet.</p></div>
   </div>
 
   <div hidden id="history-view">
@@ -373,6 +406,7 @@ const STAGE_LABELS = {
   productionMerge: "production PR merged",
   rollout: "Asah rollout confirmed",
   composer: "Composer DAGs",
+  dataflow: "Dataflow templates",
   faroBuild: "Faro build",
   faroDeploy: "Faro deploy",
   tags: "GitHub tags",
@@ -535,7 +569,7 @@ function selectedReleaseEnvironments() {
 }
 
 const MODE_HINTS = {
-  asah: "Builds and releases Asah only: build, Jira tickets, charts pull requests, rollout and, optionally, the Composer DAGs.",
+  asah: "Builds and releases Asah only: build, Jira tickets, charts pull requests, rollout and, optionally, the Composer DAGs and Dataflow templates.",
   faro: "Builds and deploys Faro only, and tags it for a PRD deploy.",
   release: "Releases Asah, uploads the Composer DAGs and deploys Faro to the same environments. Leave a project's branch empty to skip it."
 };
@@ -546,6 +580,7 @@ function formValues() {
   const values = {
     asahBranch: asahBranchInput.value.trim(),
     composer: composerOption.checked && !composerOption.disabled,
+    dataflow: selectedDataflowOptionTemplates(),
     faroEnvironments: selectedFaroEnvironments(),
     faroBranch: faroBranchInput.value.trim(),
     releaseEnvironments: selectedReleaseEnvironments(),
@@ -559,6 +594,7 @@ function formValues() {
   if (formMode === "faro") {
     values.asahBranch = "";
     values.composer = false;
+    values.dataflow = [];
     values.releaseEnvironments = [];
     values.tagSuffix = "";
   }
@@ -616,6 +652,10 @@ function updateSharedHint(values) {
     parts.push("Composer DAGs uploaded");
   }
 
+  if (values.dataflow.length) {
+    parts.push("Dataflow templates deployed");
+  }
+
   if (values.faroEnvironments.length) {
     parts.push(`Faro deployed to ${values.faroEnvironments.join(", ")}`);
   }
@@ -645,7 +685,7 @@ function updateComposerOption(values) {
   const hint = document.getElementById("composer-option-hint");
   const option = document.getElementById("composer-option");
 
-  field.hidden = !appConfig.composer.enabled;
+  field.hidden = !appConfig.composer.enabled || formMode === "faro";
 
   const missing = values.releaseEnvironments.filter(environment => !appConfig.composer.environments[environment]);
 
@@ -662,12 +702,78 @@ function updateComposerOption(values) {
   }
 }
 
+function dataflowJobs(configurations) {
+  return configurations.flatMap(name => (appConfig.dataflow.jobs[name] || []).map(project => `${name}/${project}`));
+}
+
+function dataflowTemplateChoices(name) {
+  return appConfig.dataflow.templates.map(
+    template => `<label><input name="${name}" type="checkbox" value="${escapeHtml(template)}">${escapeHtml(template)}</label>`).join("");
+}
+
+function dataflowPlan(configurations, templates) {
+  const parts = [`publishes ${templates.map(template => `<code>${escapeHtml(template)}</code>`).join(", ")} to ${configurations.map(name => `<code>${escapeHtml(name)}</code>`).join(", ")}`];
+
+  if (templates.includes(appConfig.dataflow.streamingTemplate)) {
+    parts.push(`updates the running jobs of ${dataflowJobs(configurations).map(job => `<code>${escapeHtml(job)}</code>`).join(", ")}; if Dataflow refuses an update, the old job keeps running and you choose whether to drain and relaunch it`);
+  }
+
+  return parts.join(", then ");
+}
+
+function selectedDataflowOptionTemplates() {
+  const field = document.getElementById("dataflow-option-field");
+
+  if (field.hidden || field.dataset.disabled) {
+    return [];
+  }
+
+  return [...document.querySelectorAll("input[name=dataflow-option-template]:checked")].map(input => input.value);
+}
+
+function updateDataflowOption(values) {
+  const field = document.getElementById("dataflow-option-field");
+  const hint = document.getElementById("dataflow-option-hint");
+
+  field.hidden = !appConfig.dataflow.enabled || formMode === "faro";
+
+  const missing = values.releaseEnvironments.filter(environment => !appConfig.composer.environments[environment]);
+  const disabled = !values.releaseEnvironments.length || missing.length > 0;
+
+  for (const input of document.querySelectorAll("input[name=dataflow-option-template]")) {
+    input.disabled = disabled;
+  }
+
+  if (disabled) {
+    field.dataset.disabled = "1";
+  }
+  else {
+    delete field.dataset.disabled;
+  }
+
+  const templates = [...document.querySelectorAll("input[name=dataflow-option-template]:checked")].map(input => input.value);
+
+  if (!values.releaseEnvironments.length) {
+    hint.textContent = "Pick release environments first; the templates go to their gcloud configurations.";
+  }
+  else if (missing.length) {
+    hint.textContent = `No gcloud configurations for ${missing.map(environment => environment.toUpperCase()).join(", ")} in the team settings.`;
+  }
+  else if (!templates.length) {
+    hint.textContent = "Tick the templates whose pipelines changed; leave them empty to skip Dataflow.";
+  }
+  else {
+    hint.innerHTML = `After the Composer DAGs, builds the released Asah commit and ${dataflowPlan(composerConfigurations(values.releaseEnvironments), templates)}. The version is the release's tag suffix.`;
+  }
+}
+
 function updateForm() {
 
   // Whether the Composer box can be ticked depends on the environments, and
   // whether it counts depends on the box, so read the form again after it.
 
   updateComposerOption(formValues());
+  updateDataflowOption(formValues());
 
   const values = formValues();
   const faroEnvironments = values.faroEnvironments;
@@ -866,6 +972,10 @@ function renderStage(run, name) {
     action = `<div style="display:flex;gap:8px;margin-top:8px"><button data-tickets="close-tickets" data-run="${run.id}" type="button">Close tickets</button><button class="secondary" data-tickets="keep-tickets" data-run="${run.id}" type="button">Keep open</button></div>`;
   }
 
+  if ((name === "dataflow" || name.startsWith("dataflow-")) && stage.status === "running" && run.dataflowRelaunch && !run.dataflowRelaunch.approved) {
+    action = `<div style="margin-top:8px"><button data-relaunch-dataflow="${run.id}" type="button">Drain and relaunch</button></div>`;
+  }
+
   if (stage.needsGcloudLogin && stage.status === "running") {
     action = `<div style="margin-top:8px"><button data-gcloud-login="1" type="button">Log in to gcloud</button></div>`;
   }
@@ -1037,8 +1147,12 @@ function renderRun(run) {
     images += `<div class="tickets">Jira: ${tickets.join(" · ")}</div>`;
   }
 
-  if (run.kind === "composer" && run.commit) {
+  if ((run.kind === "composer" || run.kind === "dataflow") && run.commit) {
     images += `<div class="image">Asah commit: ${escapeHtml(run.commit)}</div>`;
+  }
+
+  if (run.dataflowVersion) {
+    images += `<div class="image">Dataflow template version: ${escapeHtml(run.dataflowVersion)}</div>`;
   }
 
   if (run.asahImages?.length) {
@@ -1069,6 +1183,10 @@ function renderRun(run) {
 
   if (run.kind === "composer") {
     titleParts.push(`Composer DAGs · ${escapeHtml(run.ref)} → ${escapeHtml(listEnvironments(run.environments))}`);
+  }
+
+  if (run.kind === "dataflow") {
+    titleParts.push(`Dataflow ${escapeHtml(run.dataflowTemplates.join(", "))} · ${escapeHtml(run.ref)} → ${escapeHtml(listEnvironments(run.environments))}`);
   }
 
   if (run.asahBranch) {
@@ -1109,8 +1227,8 @@ function renderRun(run) {
 }
 
 function runMode(run) {
-  if (run.kind === "composer") {
-    return "composer";
+  if (run.kind === "composer" || run.kind === "dataflow") {
+    return run.kind;
   }
 
   return run.mode || "release";
@@ -1152,6 +1270,7 @@ async function refreshRuns() {
     const previous = runs.filter(run => !shown.has(run));
     const current = latest[formMode];
     const currentComposer = latest.composer;
+    const currentDataflow = latest.dataflow;
 
     let label = "run";
 
@@ -1171,6 +1290,11 @@ async function refreshRuns() {
     if (currentComposer) {
       document.getElementById("composer-title").textContent = currentComposer.status === "running" ? "Current Composer run" : "Last Composer run";
       document.getElementById("composer-run").innerHTML = renderRun(currentComposer);
+    }
+
+    if (currentDataflow) {
+      document.getElementById("dataflow-title").textContent = currentDataflow.status === "running" ? "Current Dataflow run" : "Last Dataflow run";
+      document.getElementById("dataflow-run").innerHTML = renderRun(currentDataflow);
     }
 
     runsNeedLogin = runs.some(
@@ -1352,6 +1476,20 @@ runsContainer.addEventListener("click", async event => {
     return;
   }
 
+  const relaunchId = event.target.dataset.relaunchDataflow;
+
+  if (relaunchId) {
+    const pending = runsById[relaunchId]?.dataflowRelaunch;
+
+    if (pending && confirm(`Drain ${pending.job} in ${pending.configuration} and launch it again from the new template?\n\nDraining finishes the events in flight and stops the job; no events are processed until the new job runs, usually a few minutes.`)) {
+      await fetch(`/api/runs/${relaunchId}/relaunch-dataflow`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+      refreshRuns();
+    }
+
+    return;
+  }
+
   const rolloutId = event.target.dataset.confirmRollout;
 
   if (rolloutId) {
@@ -1378,7 +1516,7 @@ runsContainer.addEventListener("click", async event => {
 document.getElementById("form").addEventListener("submit", async event => {
   event.preventDefault();
 
-  const {asahBranch, composer, faroBranch, faroEnvironments, releaseEnvironments, tagSuffix} = formValues();
+  const {asahBranch, composer, dataflow, faroBranch, faroEnvironments, releaseEnvironments, tagSuffix} = formValues();
   const mode = formMode;
   const prdRelease = isPrdRelease(faroBranch, faroEnvironments, releaseEnvironments);
 
@@ -1427,6 +1565,14 @@ document.getElementById("form").addEventListener("submit", async event => {
     if (composer) {
       steps.push(`• Upload the Composer DAGs of the released commit to ${composerConfigurations(releaseEnvironments).join(", ")}`);
     }
+
+    if (dataflow.length) {
+      steps.push(`• Build the released commit and publish the Dataflow templates ${dataflow.join(", ")} to ${composerConfigurations(releaseEnvironments).join(", ")}`);
+
+      if (dataflow.includes(appConfig.dataflow.streamingTemplate)) {
+        steps.push(`• Update the running Dataflow jobs ${dataflowJobs(composerConfigurations(releaseEnvironments)).join(", ")}`);
+      }
+    }
   }
 
   if (faroBranch) {
@@ -1455,7 +1601,7 @@ document.getElementById("form").addEventListener("submit", async event => {
 
   try {
     const response = await fetch("/api/runs", {
-      body: JSON.stringify({asahBranch, composer, faroBranch, faroEnvironments, mode, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
+      body: JSON.stringify({asahBranch, composer, dataflow, faroBranch, faroEnvironments, mode, releaseEnvironments, tagSuffix, tickets: ticketsChoice, version}),
       headers: {"Content-Type": "application/json"},
       method: "POST"
     });
@@ -1489,6 +1635,12 @@ function showTab(name) {
 
   document.getElementById("composer-view").hidden = name !== "composer";
   document.getElementById("dataflow-view").hidden = name !== "dataflow";
+
+  if (name === "dataflow") {
+    lastRunsJson = "";
+
+    refreshRuns();
+  }
   document.getElementById("history-view").hidden = name !== "history";
   document.getElementById("release-view").hidden = !formTab;
 
@@ -1716,12 +1868,85 @@ document.getElementById("composer-form").addEventListener("submit", async event 
   refreshRuns();
 });
 
+function renderDataflowChoices() {
+  document.getElementById("dataflow-tab").hidden = !appConfig.dataflow.enabled;
+  document.getElementById("dataflow-environments").innerHTML = Object.keys(appConfig.composer.environments).map(
+    environment => `<label><input name="dataflow-environment" type="checkbox" value="${escapeHtml(environment)}">${escapeHtml(environment.toUpperCase())}</label>`).join("");
+  document.getElementById("dataflow-templates").innerHTML = dataflowTemplateChoices("dataflow-template");
+  document.getElementById("dataflow-option-templates").innerHTML = dataflowTemplateChoices("dataflow-option-template");
+}
+
+function selectedDataflowValues() {
+  const environments = [...document.querySelectorAll("input[name=dataflow-environment]:checked")].map(input => input.value);
+
+  return {
+    configurations: environments.flatMap(environment => appConfig.composer.environments[environment]),
+    environments,
+    ref: document.getElementById("dataflow-ref").value.trim(),
+    templates: [...document.querySelectorAll("input[name=dataflow-template]:checked")].map(input => input.value)
+  };
+}
+
+function updateDataflowHint() {
+  const {configurations, templates} = selectedDataflowValues();
+  const hint = document.getElementById("dataflow-hint");
+
+  if (!configurations.length || !templates.length) {
+    hint.textContent = "Pick the environments and the templates whose pipelines changed.";
+
+    return;
+  }
+
+  hint.innerHTML = `Builds the pipelines once, then ${dataflowPlan(configurations, templates)}, one configuration after the other. A gcloud login is checked first.`;
+}
+
+document.getElementById("dataflow-form").addEventListener("input", updateDataflowHint);
+
+document.getElementById("dataflow-form").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const dataflowError = document.getElementById("dataflow-error");
+  const {configurations, environments, ref, templates} = selectedDataflowValues();
+
+  if (!environments.length || !templates.length || !ref) {
+    dataflowError.textContent = "Pick at least one environment and one template, and enter the Asah version.";
+
+    return;
+  }
+
+  const steps = [`• Build the pipelines of ${ref}`, `• Publish ${templates.join(", ")} to ${configurations.join(", ")}`];
+
+  if (templates.includes(appConfig.dataflow.streamingTemplate)) {
+    steps.push(`• Update the running jobs ${dataflowJobs(configurations).join(", ")}`);
+  }
+
+  if (!confirm(`This will:\n\n${steps.join("\n")}\n\nContinue?`)) {
+    return;
+  }
+
+  dataflowError.textContent = "";
+
+  const response = await fetch("/api/dataflow-runs", {
+    body: JSON.stringify({environments, ref, templates}),
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    dataflowError.textContent = (await response.json()).error || `Request failed (${response.status})`;
+  }
+
+  refreshRuns();
+});
+
 async function start() {
   appConfig = await (await fetch("/api/config")).json();
 
   renderChoices();
   renderComposerChoices();
   updateComposerHint();
+  renderDataflowChoices();
+  updateDataflowHint();
   updateForm();
   loadHealth(false);
   loadBranches();

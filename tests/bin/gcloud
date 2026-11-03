@@ -9,10 +9,105 @@ from pathlib import Path
 
 STATE = Path(os.environ["FAKE_GCLOUD_STATE"])
 EXPIRED = STATE.with_name("gcloud-expired")
+INCOMPATIBLE = STATE.with_name("dataflow-incompatible")
+RUNNING_STATES = {"Pending", "Queued", "Running"}
 
 
 def expired():
     return bool(os.environ.get("FAKE_GCLOUD_EXPIRED")) or EXPIRED.exists()
+
+
+def dataflow(state, arguments):
+
+    # Flex Templates and jobs: a publish records the image, a launch or an
+    # update adds a job, like Dataflow does. An update replaces the running
+    # job unless dataflow-incompatible exists, in which case the new job
+    # fails and the old one keeps running.
+
+    project = option(arguments, "--project") or os.environ.get("CLOUDSDK_CORE_PROJECT")
+    region = option(arguments, "--region") or os.environ.get("CLOUDSDK_COMPUTE_REGION")
+    jobs = state.setdefault("jobs", [])
+
+    def matching(name):
+        return [
+            job for job in jobs
+            if job["name"] == name and job["project"] == project and job["region"] == region
+        ]
+
+    if arguments[:3] == ["dataflow", "flex-template", "build"]:
+        state.setdefault("templates", []).append(
+            {"image": option(arguments, "--image-gcr-path"), "spec": arguments[3]})
+
+        return 0
+
+    if arguments[:3] == ["dataflow", "flex-template", "run"]:
+        name = arguments[3]
+        running = [job for job in matching(name) if job["state"] in RUNNING_STATES]
+        update = "--update" in arguments
+
+        state.setdefault("launches", []).append({
+            "name": name, "network": option(arguments, "--network"), "project": project,
+            "subnetwork": option(arguments, "--subnetwork"), "update": update,
+        })
+
+        if update and not running:
+            print(f"ERROR: no running job named {name} to update", file=sys.stderr)
+
+            return 1
+
+        if not update and running:
+            print(f"ERROR: a job named {name} is already running", file=sys.stderr)
+
+            return 1
+
+        new_state = "Running"
+
+        if update and INCOMPATIBLE.exists():
+            new_state = "Failed"
+        elif update:
+            running[0]["state"] = "Updated"
+
+        jobs.append({
+            "creationTime": f"2026-01-01 00:00:{len(jobs):02d}", "id": f"job-{len(jobs) + 1}",
+            "name": name, "project": project, "region": region, "state": new_state,
+        })
+
+        return 0
+
+    if arguments[:3] == ["dataflow", "jobs", "list"]:
+        name = option(arguments, "--filter").split("=", 1)[1]
+
+        print(json.dumps([
+            {key: job[key] for key in ("creationTime", "id", "name", "state")}
+            for job in matching(name)
+        ]))
+
+        return 0
+
+    if arguments[:3] == ["dataflow", "jobs", "drain"]:
+        for job in jobs:
+            if job["id"] == arguments[3]:
+                job["state"] = "Drained"
+
+        state.setdefault("drains", []).append(arguments[3])
+
+        return 0
+
+    sys.exit(f"fake gcloud: unsupported {arguments}")
+
+
+def option(arguments, name):
+
+    # --name=value or --name value.
+
+    for index, argument in enumerate(arguments):
+        if argument.startswith(name + "="):
+            return argument.split("=", 1)[1]
+
+        if argument == name and index + 1 < len(arguments):
+            return arguments[index + 1]
+
+    return None
 
 
 def main():
@@ -60,6 +155,17 @@ def main():
             })
 
             print(f"Imported {option('--source')}")
+    elif arguments[:1] == ["dataflow"]:
+        if expired():
+            print("ERROR: Reauthentication failed.", file=sys.stderr)
+
+            code = 1
+        else:
+            code = dataflow(state, arguments)
+    elif arguments[:3] == ["config", "get-value", "project"]:
+        print(os.environ.get("CLOUDSDK_CORE_PROJECT", ""))
+    elif arguments[:3] == ["config", "get-value", "compute/region"]:
+        print(os.environ.get("CLOUDSDK_COMPUTE_REGION", ""))
     elif arguments[:2] == ["auth", "print-access-token"]:
         if expired():
             print("ERROR: Reauthentication failed. cannot prompt during non-interactive execution.", file=sys.stderr)

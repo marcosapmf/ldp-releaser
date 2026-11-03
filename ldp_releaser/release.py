@@ -35,7 +35,7 @@ VERSION_PATTERN = re.compile(r"\d+(\.\d+)+")
 STAGE_NAMES = (
     "asahBuild", "jira", "developPullRequest", "developMerge",
     "productionPullRequest", "productionMerge", "rollout", "composer",
-    "faroBuild", "faroDeploy", "tags", "closeTickets",
+    "dataflow", "faroBuild", "faroDeploy", "tags", "closeTickets",
 )
 
 MODES = ("asah", "faro", "release")
@@ -45,7 +45,7 @@ MODES = ("asah", "faro", "release")
 # GitHub halfway, so a restart during them fails the run instead.
 
 RESUMABLE_STAGES = {
-    "asahBuild", "closeTickets", "composer", "developMerge", "faroBuild",
+    "asahBuild", "closeTickets", "composer", "dataflow", "developMerge", "faroBuild",
     "faroDeploy", "productionMerge", "rollout",
 }
 
@@ -406,8 +406,8 @@ def create_release_tickets(jira, run):
 
 def create_run(
         asah_branch, faro_environments, faro_branch, release_environments,
-        tag_suffix, version, composer=False, mode="release", discard_tickets=(),
-        reuse_ticket=None):
+        tag_suffix, version, composer=False, mode="release", dataflow=(),
+        discard_tickets=(), reuse_ticket=None):
 
     production = bool(
         set(settings["charts.production.environments"]) &
@@ -422,6 +422,12 @@ def create_run(
         "composerCommit": None,
         "composerDone": [],
         "createdAt": time.time(),
+        "dataflow": list(dataflow),
+        "dataflowCommit": None,
+        "dataflowDone": [],
+        "dataflowRelaunch": None,
+        "dataflowTemplates": list(dataflow),
+        "dataflowVersion": None,
         "developMerge": None,
         "developPullRequest": None,
         "discardTickets": list(discard_tickets),
@@ -447,6 +453,7 @@ def create_run(
             "asahBuild": new_stage(settings["asah.build_job"], asah_branch),
             "closeTickets": new_stage("jira", release_environments),
             "composer": new_stage("gcloud", composer),
+            "dataflow": new_stage("gcloud", bool(dataflow)),
             "developMerge": new_stage("charts", release_environments),
             "developPullRequest": new_stage("charts", release_environments),
             "jira": new_stage("jira", release_environments),
@@ -557,6 +564,10 @@ def execute(jenkins, jira, run):
         (
             "composer", bool(run.get("composer")),
             lambda: run_local_stage(run, "composer", lambda: composer_step(run)),
+        ),
+        (
+            "dataflow", bool(run.get("dataflow")),
+            lambda: run_local_stage(run, "dataflow", lambda: dataflow_step(run)),
         ),
         *faro_steps(jenkins, run),
         (
@@ -703,6 +714,12 @@ def composer_step(run):
     from . import composer
 
     return composer.release_step(run)
+
+
+def dataflow_step(run):
+    from . import dataflow
+
+    return dataflow.release_step(run)
 
 
 def extract_tag_suffix(images):
@@ -1028,7 +1045,7 @@ def open_release_tickets(jira):
             if run["finishedAt"] is not None:
                 continue
 
-            if run.get("kind") == "composer":
+            if run.get("kind") in ("composer", "dataflow"):
                 continue
 
             active_keys.add(run["jiraTask"])
@@ -1578,6 +1595,11 @@ def validate_run(payload, verify_tags):
     if composer:
         validate_composer(release_environments)
 
+    dataflow_templates = payload.get("dataflow") or []
+
+    if dataflow_templates:
+        dataflow_templates = validate_dataflow(release_environments, dataflow_templates)
+
     version = str(payload.get("version", "")).strip() or None
 
     if version:
@@ -1602,7 +1624,25 @@ def validate_run(payload, verify_tags):
 
     return (
         asah_branch, selected_faro_environments, faro_branch,
-        release_environments, tag_suffix, version, composer, mode)
+        release_environments, tag_suffix, version, composer, mode, dataflow_templates)
+
+
+def validate_dataflow(release_environments, templates):
+    from . import dataflow
+
+    if not dataflow.enabled(settings):
+        raise ValueError("The team settings have no Dataflow setup")
+
+    if not release_environments:
+        raise ValueError(
+            "The Dataflow templates go to the released environments, so pick at least one")
+
+    problem = next(iter(dataflow.problems(settings)), None)
+
+    if problem:
+        raise ValueError(problem)
+
+    return dataflow.validate_templates(release_environments, templates)
 
 
 def validate_composer(release_environments):

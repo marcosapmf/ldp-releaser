@@ -60,6 +60,14 @@ TEAM_SCHEMA = {
     "charts.production_branch": "str",
     "charts.repository": "repository",
     "charts.tag_suffix_key": "str",
+    "dataflow.build_command": "list",
+    "dataflow.configurations": "dataflow_configurations",
+    "dataflow.directory": "str",
+    "dataflow.job_prefix": "str",
+    "dataflow.publish_script": "str",
+    "dataflow.streaming_script": "str",
+    "dataflow.streaming_template": "str",
+    "dataflow.templates": "list",
     "faro.branch_parameter": "str",
     "faro.build_environments": "table",
     "faro.build_job": "str",
@@ -97,6 +105,9 @@ OPTIONAL_KEYS = {
     "asah.dependency_file", "asah.main_branch", "jira.fix_security_level",
     "charts.merge.checks", "charts.merge.develop_method",
     "charts.merge.production_method",
+    "dataflow.build_command", "dataflow.configurations", "dataflow.directory",
+    "dataflow.job_prefix", "dataflow.publish_script", "dataflow.streaming_script",
+    "dataflow.streaming_template", "dataflow.templates",
     "gcloud.configurations", "gcloud.environments", "server.port",
     "slack.webhook_url",
 }
@@ -319,6 +330,29 @@ def validate_kind(kind, value):
 
             if unknown:
                 return f"has unknown keys for {name}: {', '.join(sorted(unknown))}"
+    elif kind == "dataflow_configurations":
+        if not isinstance(value, dict) or not value:
+            return "must be a table with at least one configuration"
+
+        for name, configuration in value.items():
+            if not isinstance(configuration, dict):
+                return f"must give the jobs of {name} as a table"
+
+            projects = configuration.get("dxp_projects")
+
+            if not isinstance(projects, list) or not projects or not all(
+                    isinstance(project, str) for project in projects):
+
+                return f"must list the dxp_projects of {name}"
+
+            for key in ("network", "subnetwork"):
+                if not isinstance(configuration.get(key), str) or not configuration[key]:
+                    return f"must give the {key} of {name}"
+
+            unknown = set(configuration) - {"dxp_projects", "network", "subnetwork"}
+
+            if unknown:
+                return f"has unknown keys for {name}: {', '.join(sorted(unknown))}"
     elif kind in ("table", "url_table"):
         if not isinstance(value, dict) or not value:
             return "must be a table with at least one entry"
@@ -430,6 +464,34 @@ def validate_team(team):
     if len(composer_keys) == 1:
         problems.append(
             "asah.composer_directory and asah.composer_script go together")
+
+    dataflow_keys = (
+        "dataflow.build_command", "dataflow.directory", "dataflow.publish_script",
+        "dataflow.templates")
+
+    if len([key for key in dataflow_keys if get_value(team, key)]) not in (0, len(dataflow_keys)):
+        problems.append(f"{', '.join(dataflow_keys[:-1])} and {dataflow_keys[-1]} go together")
+
+    streaming_keys = (
+        "dataflow.configurations", "dataflow.job_prefix", "dataflow.streaming_script",
+        "dataflow.streaming_template")
+
+    if len([key for key in streaming_keys if get_value(team, key)]) not in (
+            0, len(streaming_keys)):
+
+        problems.append(f"{', '.join(streaming_keys[:-1])} and {streaming_keys[-1]} go together")
+
+    streaming_template = get_value(team, "dataflow.streaming_template")
+
+    if streaming_template and streaming_template not in (get_value(team, "dataflow.templates") or []):
+        problems.append("dataflow.streaming_template must be one of dataflow.templates")
+
+    unknown = set(get_value(team, "dataflow.configurations") or {}) - set(configurations)
+
+    if unknown:
+        problems.append(
+            f"dataflow.configurations names unknown gcloud configurations: "
+            f"{', '.join(sorted(unknown))}")
 
     fix_keys = ("asah.dependency_file", "asah.main_branch", "jira.fix_security_level")
 

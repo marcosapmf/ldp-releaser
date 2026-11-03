@@ -118,3 +118,27 @@ prd-us = { project = "example-prd-us", region = "us-central1", zone = "us-centra
 [gcloud.environments]
 stg = ["staging"]
 prd = ["prd-eu", "prd-us"]
+
+# Optional: the Dataflow tab and release step. The pipelines are built once
+# in `directory` of a temporary Asah worktree, then publish_script runs with
+# <template> <version> for each template and gcloud configuration, with the
+# project and region set through CLOUDSDK_CORE_PROJECT and
+# CLOUDSDK_COMPUTE_REGION. The version is the Asah tag suffix.
+[dataflow]
+directory = "pipelines"
+build_command = ["./build.sh"]
+publish_script = "create_template.sh"
+templates = ["streaming-pipeline", "batch-pipeline"]
+
+# Optional, together: the template whose running jobs are updated after it
+# is published. streaming_script runs with [--update] <dxp project>
+# <network> <subnetwork>; the jobs are named job_prefix + dxp project.
+streaming_template = "streaming-pipeline"
+streaming_script = "run_streaming.sh"
+job_prefix = "streaming-"
+
+# gcloud configuration -> the streaming jobs it runs.
+[dataflow.configurations]
+staging = { dxp_projects = ["example-stg"], network = "example-network", subnetwork = "example-subnetwork" }
+prd-eu = { dxp_projects = ["example-eu"], network = "example-network", subnetwork = "example-subnetwork" }
+prd-us = { dxp_projects = ["example-us-1", "example-us-2"], network = "example-network", subnetwork = "example-subnetwork" }

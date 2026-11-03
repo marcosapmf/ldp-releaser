@@ -8,7 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import composer, failure, fixes, gcloud, health, release
+from . import composer, dataflow, failure, fixes, gcloud, health, release
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 
@@ -90,6 +90,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/composer-runs":
             return self._start_composer_run()
 
+        if self.path == "/api/dataflow-runs":
+            return self._start_dataflow_run()
+
         if self.path == "/api/gcloud/login":
             return self._send_json(202, self.gcloud_login.start())
 
@@ -112,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._fix(match.group(1))
 
         match = re.fullmatch(
-            r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets)",
+            r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets|relaunch-dataflow)",
             self.path)
 
         if match:
@@ -151,6 +154,15 @@ class Handler(BaseHTTPRequestHandler):
                     for environment in settings.environments()
                     if environment in (settings["gcloud.environments"] or {})
                 },
+            },
+            "dataflow": {
+                "enabled": dataflow.enabled(settings),
+                "jobs": {
+                    name: configuration["dxp_projects"]
+                    for name, configuration in (settings["dataflow.configurations"] or {}).items()
+                },
+                "streamingTemplate": settings["dataflow.streaming_template"],
+                "templates": settings["dataflow.templates"] or [],
             },
             "environments": settings.environments(),
             "faroBuildEnvironments": settings["faro.build_environments"],
@@ -231,6 +243,14 @@ class Handler(BaseHTTPRequestHandler):
                         409, {"error": "The run is not waiting for a rollout"})
 
                 run["rolloutConfirmed"] = True
+            elif action == "relaunch-dataflow":
+                pending = run.get("dataflowRelaunch")
+
+                if run["finishedAt"] or not pending or pending["approved"]:
+                    return self._send_json(
+                        409, {"error": "The run is not waiting to relaunch a Dataflow job"})
+
+                run["dataflowRelaunch"] = {**pending, "approved": True}
             else:
                 if (run["prdRelease"] or run["ticketsDecision"] is not None or
                         run["stages"]["closeTickets"]["status"] != "running"):
@@ -273,6 +293,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": str(exception)})
 
         run = composer.create_run(environments, ref)
+
+        start_run(self.jenkins, self.jira, run)
+
+        return self._send_json(201, {"id": run["id"]})
+
+    def _start_dataflow_run(self):
+        try:
+            environments, ref, templates = dataflow.validate(self._payload())
+        except ValueError as exception:
+            return self._send_json(400, {"error": str(exception)})
+
+        run = dataflow.create_run(environments, ref, templates)
 
         start_run(self.jenkins, self.jira, run)
 
@@ -337,6 +369,8 @@ def serve(account, jenkins, jira, settings, unfinished_runs):
 def start_run(jenkins, jira, run):
     if run.get("kind") == "composer":
         threading.Thread(args=(run,), daemon=True, target=composer.execute).start()
+    elif run.get("kind") == "dataflow":
+        threading.Thread(args=(run,), daemon=True, target=dataflow.execute).start()
     else:
         threading.Thread(
             args=(jenkins, jira, run), daemon=True, target=release.execute).start()

@@ -102,11 +102,11 @@ used as a fallback), `LDP_CHARTS_CHECKOUT`, `LDP_ASAH_CHECKOUT`, `LDP_PORT` and
 ## What a run does
 
 The **Release** tab runs Asah and Faro together, with one environment picker
-for everything: Asah is released, the Composer DAGs are uploaded (if ticked)
-and Faro is built and deployed to the same environments, one environment
+for everything: Asah is released, the Composer DAGs are uploaded and the
+Dataflow templates deployed (if ticked), and Faro is built and deployed to the same environments, one environment
 after the other for Faro. The **Asah** tab only runs
 the Asah part (build, tickets, charts pull requests, rollout, optional
-Composer DAGs, tag), and the **Faro** tab only builds, deploys and tags
+Composer DAGs and Dataflow templates, tag), and the **Faro** tab only builds, deploys and tags
 Faro. Each tab shows its own latest run; earlier runs are in **History**.
 
 Each section of the form is optional; leave it empty to skip those steps.
@@ -136,12 +136,16 @@ Each section of the form is optional; leave it empty to skip those steps.
    uploads the DAGs of the released Asah commit to the gcloud configurations
    of the released environments, checking the gcloud login first (see
    below).
-7. **Faro build and deploy**: builds the branch for the configured build
+7. **Dataflow templates** (optional, when the team file has the Dataflow
+   setup): builds the released Asah commit and deploys the ticked templates
+   to the same configurations, with the release's tag suffix as the
+   version (see below).
+8. **Faro build and deploy**: builds the branch for the configured build
    environment and deploys the image it pushed.
-8. **GitHub tags** (PRD releases only): tags the exact commits that were
+9. **GitHub tags** (PRD releases only): tags the exact commits that were
    built.
-9. **Closing the tickets**: automatic for PRD releases; otherwise the page
-   asks whether to close them or keep them open.
+10. **Closing the tickets**: automatic for PRD releases; otherwise the page
+    asks whether to close them or keep them open.
 
 If open release tickets exist when you start a run (for example from a
 release that did not finish), the form asks whether to reuse them or to
@@ -190,6 +194,31 @@ releases and only runs when you start it.
    upload script with `LCP_PROJECT_ID`, `PROJECT_ID` and `REGION` taken from
    the team file, never from your active gcloud configuration. If the login
    expires during an upload, it waits for a new login and uploads again.
+
+## Dataflow
+
+If the team file has the Dataflow setup (`[dataflow]` and
+`gcloud.environments`), the **Dataflow** tab deploys the Flex Templates of
+an Asah branch, tag or commit to the chosen environments. Tick the templates
+whose pipelines changed.
+
+1. It checks the gcloud login and fetches the version into a temporary
+   worktree, as the Composer tab does.
+2. It builds the pipelines once (`dataflow.build_command`). The build may
+   need credentials for private Maven repositories in your environment.
+3. For each gcloud configuration of the chosen environments, it publishes
+   each template with the version's tag suffix (commit date and short
+   hash, as in the Asah images), so the template images match the release.
+4. For the streaming template (`dataflow.streaming_template`), it then
+   updates each running job of that configuration in place and waits until
+   the new job runs. A job that is not running is never started.
+5. Dataflow refuses an update when the pipeline changed too much. The old
+   job keeps running then, and the step waits with **Drain and relaunch**:
+   it drains the old job, which stops the ingestion for a few minutes, and
+   launches it again from the new template. Cancel the run to keep the old
+   job instead.
+
+Batch templates need nothing more: their next run uses the new template.
 
 The page has a setup panel that checks Jenkins, Jira, GitHub, the charts
 clone, git, Python and Slack, and keeps **Run** disabled while something
