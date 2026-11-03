@@ -54,6 +54,19 @@ Both files are saved in `~/.config/ldp-releaser/` and are readable only by
 you. They contain secrets: never share your personal file, and never commit
 either of them.
 
+### Claude Code skill
+
+The `skill/` folder is a Claude Code skill that starts the server when it is
+not running and opens the page, so you can ask Claude to "open the
+releaser" (or run `/ldp-releaser`). Link it once from your checkout:
+
+```sh
+ln -s "$PWD/skill" ~/.claude/skills/ldp-releaser
+```
+
+The server it starts keeps running after the Claude session ends; its log is
+`~/.local/state/ldp-releaser/server.log`.
+
 ## Settings
 
 | File | Who writes it | Contents |
