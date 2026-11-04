@@ -231,6 +231,14 @@ pre {
     <button aria-selected="false" class="tab" data-tab="history" role="tab" type="button">History <span id="history-count"></span></button>
   </nav>
 
+  <section class="card health" hidden id="team-update">
+    <div class="health-head">
+      <strong id="team-update-message"></strong>
+      <button hidden id="team-update-apply" type="button">Update and restart</button>
+    </div>
+    <div class="hint" id="team-update-detail"></div>
+  </section>
+
   <section class="card health" hidden id="gcloud-login">
     <div class="health-head">
       <strong id="gcloud-login-message">Your gcloud login has expired.</strong>
@@ -1939,6 +1947,109 @@ document.getElementById("dataflow-form").addEventListener("submit", async event 
   refreshRuns();
 });
 
+let teamUpdateRestarting = false;
+
+async function loadTeamUpdate() {
+  if (teamUpdateRestarting || document.visibilityState !== "visible") {
+    return;
+  }
+
+  try {
+    const update = await (await fetch("/api/team-update?check=1")).json();
+    const panel = document.getElementById("team-update");
+    const button = document.getElementById("team-update-apply");
+    const detail = document.getElementById("team-update-detail");
+    const message = document.getElementById("team-update-message");
+
+    // The check runs in the background; look again shortly for its answer.
+
+    if (["checking", "unknown"].includes(update.status)) {
+      setTimeout(loadTeamUpdate, 2000);
+    }
+
+    panel.hidden = !["available", "invalid", "local-newer"].includes(update.status);
+    button.hidden = update.status !== "available";
+
+    const shown = update.changes.slice(0, 8).map(key => `<code>${escapeHtml(key)}</code>`).join(", ");
+    let changes = `Changed: ${shown}`;
+
+    if (update.changes.length > 8) {
+      changes += ` and ${update.changes.length - 8} more`;
+    }
+
+    if (update.status === "available") {
+      message.textContent = "There is a newer version of the team settings in 1Password.";
+      detail.innerHTML = `${changes}. Updating replaces your copy and restarts LDP Releaser; unfinished runs resume after the restart.`;
+    }
+    else if (update.status === "local-newer") {
+      let command = `op document edit "${update.item}" ${update.teamFile}`;
+
+      if (update.vault) {
+        command += ` --vault "${update.vault}"`;
+      }
+
+      message.textContent = "Your team settings were changed after the version in 1Password.";
+      detail.innerHTML = `${changes}. Upload your copy so the team gets it: <code>${escapeHtml(command)}</code>`;
+    }
+    else if (update.status === "invalid") {
+      message.textContent = "There is a newer version of the team settings in 1Password, but this version of LDP Releaser cannot use it.";
+      detail.innerHTML = `${changes}. Problems: ${update.problems.map(escapeHtml).join("; ")}. Pull the latest LDP Releaser, or ask the file's owner to fix it.`;
+    }
+  }
+  catch (error) {
+    console.error(error);
+  }
+}
+
+document.getElementById("team-update-apply").addEventListener("click", async () => {
+  if (!confirm("Replace your team settings with the version in 1Password and restart LDP Releaser?\n\nUnfinished runs resume after the restart.")) {
+    return;
+  }
+
+  const button = document.getElementById("team-update-apply");
+  const detail = document.getElementById("team-update-detail");
+
+  button.disabled = true;
+  button.textContent = "Restarting…";
+  teamUpdateRestarting = true;
+
+  const response = await fetch("/api/team-update", {
+    body: "{}",
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    button.disabled = false;
+    button.textContent = "Update and restart";
+    detail.textContent = (await response.json()).error || `Request failed (${response.status})`;
+    teamUpdateRestarting = false;
+
+    return;
+  }
+
+  // The old server answers for a moment before it restarts, so wait before
+  // asking whether the new one is up.
+
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  while (true) {
+    try {
+      if ((await fetch("/api/config")).ok) {
+        location.reload();
+
+        return;
+      }
+    }
+    catch (error) {
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+});
+
+document.addEventListener("visibilitychange", loadTeamUpdate);
+
 async function start() {
   appConfig = await (await fetch("/api/config")).json();
 
@@ -1950,8 +2061,10 @@ async function start() {
   updateForm();
   loadHealth(false);
   loadBranches();
+  loadTeamUpdate();
   refreshRuns();
   setInterval(refreshRuns, 3000);
+  setInterval(loadTeamUpdate, 60000);
 }
 
 start();

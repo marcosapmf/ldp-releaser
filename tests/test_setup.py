@@ -105,6 +105,56 @@ class SetupTest(AppTestCase):
         self.assertEqual("secret-token", personal["jenkins"]["token"])
         self.assertEqual(str(self.checkout), personal["charts"]["checkout"])
         self.assertEqual(str(self.asah_checkout), personal["asah"]["checkout"])
+        self.assertNotIn("team", personal)
+
+    def test_team_file_from_1password_is_remembered(self):
+
+        # The page checks the same item for newer versions later.
+
+        vault = self.temp / "op" / "Shared"
+        vault.mkdir(parents=True)
+
+        (vault / "team file").write_text(TEAM.format(url=self.fakes.url))
+
+        answers = "\n".join([
+            "", "team file", "Shared",
+            "tester", "secret-token",
+            "tester@example.com", "secret-token",
+            str(self.checkout),
+            str(self.asah_checkout),
+            str(self.port),
+        ]) + "\n"
+
+        process = subprocess.Popen(
+            [sys.executable, "-m", "ldp_releaser"], cwd=ROOT, env=self.environment(),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True)
+
+        process.stdin.write(answers)
+        process.stdin.close()
+
+        output = ""
+        deadline = time.time() + 30
+
+        while "running on" not in output and time.time() < deadline:
+            line = process.stdout.readline()
+
+            if not line:
+                break
+
+            output += line
+
+        process.terminate()
+        process.wait(timeout=10)
+        process.stdout.close()
+
+        self.assertIn("running on", output)
+
+        with (self.temp / "config" / "ldp-releaser" / "config.toml").open("rb") as file:
+            personal = tomllib.load(file)
+
+        self.assertEqual(
+            {"onepassword_item": "team file", "onepassword_vault": "Shared"}, personal["team"])
 
 
 if __name__ == "__main__":

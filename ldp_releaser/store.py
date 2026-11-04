@@ -97,14 +97,7 @@ def prepare_resume(run):
         if run["cancelRequested"]:
             interrupted = None
         else:
-            interrupted = next(
-                (
-                    name for name in run.get("stageOrder", release.STAGE_NAMES)
-                    if run["stages"][name]["status"] in ("queued", "running") and
-                    name.partition("-")[0] not in release.RESUMABLE_STAGES and
-                    run.get("kind") not in ("composer", "dataflow")
-                ),
-                None)
+            interrupted = unresumable_stage(run)
 
         if run["cancelRequested"] or interrupted:
             for stage in run["stages"].values():
@@ -175,3 +168,26 @@ def start():
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
     threading.Thread(daemon=True, target=save_loop).start()
+
+
+def unresumable_stage(run):
+
+    # The step that a restart would stop halfway, if any. Call it with
+    # release.runs_lock held.
+
+    if run["finishedAt"]:
+        return None
+
+    for name in run.get("stageOrder", release.STAGE_NAMES):
+        stage = run["stages"][name]
+
+        if (stage.get("fix") or {}).get("status") == "running":
+            return name
+
+        if (stage["status"] in ("queued", "running") and
+                name.partition("-")[0] not in release.RESUMABLE_STAGES and
+                run.get("kind") not in ("composer", "dataflow")):
+
+            return name
+
+    return None

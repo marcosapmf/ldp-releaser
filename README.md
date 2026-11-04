@@ -72,7 +72,7 @@ The server it starts keeps running after the Claude session ends; its log is
 | File | Who writes it | Contents |
 |---|---|---|
 | `ldp-releaser.team.toml` | the team owner, shared privately | Jenkins, Jira and Argo CD URLs, job and parameter names, repositories, values files per environment, Jira workflow, Slack webhook |
-| `config.toml` | the first-run setup, one per person | Jenkins user and token, Jira email and token, charts clone path, port |
+| `config.toml` | the first-run setup, one per person | Jenkins user and token, Jira email and token, charts clone path, port, the 1Password item of the team file |
 
 See [`team.example.toml`](team.example.toml) and
 [`config.example.toml`](config.example.toml) for every setting, with
@@ -87,11 +87,22 @@ one. With the 1Password CLI:
 op document edit "<item>" ~/.config/ldp-releaser/ldp-releaser.team.toml --vault "<vault>"
 ```
 
-Then tell the team to run `./ldp-releaser --setup` and answer yes to
-replacing the team settings, so everyone fetches the new version. If a
-newer version of LDP Releaser needs a setting the file does not have yet,
-the next start lists the missing settings and asks for an updated file: add
-them to the shared file the same way, then fetch it again.
+Everyone who fetched the file with the 1Password CLI during setup is told
+on the page: while it is open, LDP Releaser checks that 1Password item at
+most once an hour (1Password may ask you to authorize the CLI). A newer
+version shows which settings changed, by name only, and **Update and
+restart** replaces the local copy and restarts the server; unfinished runs
+resume as after any restart. It waits while a run is in a step that a
+restart would stop halfway, such as opening a pull request. A version this
+LDP Releaser cannot use is shown with its problems and is not offered. When
+your local copy was changed after the version in 1Password, the page shows
+the command to upload it instead, so nothing undoes your edits.
+
+Teammates who gave a file path instead run `./ldp-releaser --setup`, answer
+yes to replacing the team settings, and fetch it again. If a newer version
+of LDP Releaser needs a setting the file does not have yet, the next start
+lists the missing settings and asks for an updated file: add them to the
+shared file the same way, then fetch it again.
 
 Personal settings can also come from environment variables, which take
 precedence over the file: `LDP_JENKINS_USER`, `LDP_JENKINS_TOKEN`,

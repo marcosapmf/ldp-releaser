@@ -31,6 +31,8 @@ PERSONAL_SCHEMA = {
     "jira.email": "str",
     "jira.token": "secret",
     "server.port": "port",
+    "team.onepassword_item": "str",
+    "team.onepassword_vault": "str",
 }
 
 TEAM_SCHEMA = {
@@ -109,7 +111,7 @@ OPTIONAL_KEYS = {
     "dataflow.job_prefix", "dataflow.publish_script", "dataflow.streaming_script",
     "dataflow.streaming_template", "dataflow.templates",
     "gcloud.configurations", "gcloud.environments", "server.port",
-    "slack.webhook_url",
+    "slack.webhook_url", "team.onepassword_item", "team.onepassword_vault",
 }
 
 # Environment variables that override a setting, first match wins. The

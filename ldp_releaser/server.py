@@ -8,7 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import composer, dataflow, failure, fixes, gcloud, health, release
+from . import composer, dataflow, failure, fixes, gcloud, health, release, team_update
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 
@@ -58,6 +58,12 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, RuntimeError, urllib.error.URLError) as exception:
                 return self._send_json(502, {"error": str(exception)})
 
+        if url.path == "/api/team-update":
+            if "check" in urllib.parse.parse_qs(url.query):
+                team_update.start_check(self.settings)
+
+            return self._send_json(200, team_update.current(self.settings))
+
         if url.path == "/api/runs":
             with release.runs_lock:
                 body = json.dumps(
@@ -95,6 +101,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/gcloud/login":
             return self._send_json(202, self.gcloud_login.start())
+
+        if self.path == "/api/team-update":
+            if not team_update.enabled(self.settings):
+                return self._send_json(
+                    409, {"error": "No 1Password item for the team file in your settings"})
+
+            problem = team_update.apply(self.settings)
+
+            if problem:
+                return self._send_json(409, {"error": problem})
+
+            return self._send_json(202, {"restarting": True})
 
         if self.path == "/api/gcloud/login/code":
             payload = self._payload()

@@ -197,7 +197,7 @@ def ask_port(personal, force):
         print("  Use a port between 1024 and 65535")
 
 
-def ask_team_file(problems):
+def ask_team_file(problems, personal):
     print()
 
     if problems:
@@ -231,8 +231,9 @@ def ask_team_file(problems):
                 continue
 
             text = path.read_text()
+            source = (None, None)
         elif use_op:
-            text = fetch_with_op()
+            text, *source = fetch_with_op()
 
             if text is None:
                 continue
@@ -257,6 +258,11 @@ def ask_team_file(problems):
             continue
 
         config.write_private(config.TEAM_FILE, text)
+
+        # The page checks this item for newer versions of the file.
+
+        config.set_value(personal, "team.onepassword_item", source[0])
+        config.set_value(personal, "team.onepassword_vault", source[1])
 
         print(f"  Saved to {config.TEAM_FILE}")
 
@@ -308,9 +314,9 @@ def ensure_configured(force=False):
     if force or team is None or team_problems:
         if force and team is not None and not team_problems:
             if ask("Replace the team settings? (y/N)").lower().startswith("y"):
-                team = ask_team_file([])
+                team = ask_team_file([], personal)
         else:
-            team = ask_team_file(team_problems)
+            team = ask_team_file(team_problems, personal)
 
     settings = config.Settings(team)
 
@@ -345,7 +351,7 @@ def fetch_with_op():
     item = ask("1Password item name")
 
     if not item:
-        return None
+        return None, None, None
 
     vault = ask("1Password vault (press Enter for any)")
 
@@ -359,9 +365,9 @@ def fetch_with_op():
     if completed.returncode:
         print(f"  1Password could not fetch it: {completed.stderr.strip()}")
 
-        return None
+        return None, None, None
 
-    return completed.stdout
+    return completed.stdout, item, vault or None
 
 
 def keep(personal, key, value):

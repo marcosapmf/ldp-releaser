@@ -23,3 +23,7 @@ checkout = "~/projects/asah"        # only for the Composer tab: your clone of t
 
 [server]
 port = 8766
+
+[team]
+onepassword_item = "Team settings file"   # set by the setup when it fetches the team file with
+onepassword_vault = "Team vault"          # the 1Password CLI; the page checks it for new versions
