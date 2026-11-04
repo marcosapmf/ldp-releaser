@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDP Releaser setup</title>
+<style>
+:root {
+  --accent: #2f6fde;
+  --accent-text: #ffffff;
+  --bg: #f5f6f8;
+  --border: #dde1e7;
+  --fail: #c43a3a;
+  --muted: #5d6877;
+  --ok: #2d8a4e;
+  --surface: #ffffff;
+  --text: #1b232e;
+  --warn: #b26f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #5d8ff0;
+    --bg: #0f1318;
+    --border: #2a323d;
+    --fail: #e46767;
+    --muted: #95a1b1;
+    --ok: #5cc285;
+    --surface: #171c23;
+    --text: #e4e9ef;
+    --warn: #e2a54a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+}
+main { margin: 0 auto; max-width: 860px; padding: 32px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 24px; }
+h2 { font-size: 16px; margin: 0; }
+.card + .card { margin-top: 20px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+.card p { margin: 0; }
+ul { margin: 0; padding-left: 20px; }
+li { color: var(--fail); overflow-wrap: anywhere; }
+.fields { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+input[type=text], input[type=password] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 11px;
+  width: 100%;
+}
+input:disabled { opacity: .6; }
+input.invalid { border-color: var(--fail); }
+.hint { color: var(--muted); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+.problem { color: var(--fail); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
+.set { color: var(--ok); font-size: 13px; font-weight: 400; }
+button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  color: var(--accent-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 18px;
+}
+button:disabled { cursor: progress; opacity: .6; }
+.form-error { color: var(--fail); min-height: 1em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LDP Releaser setup</h1>
+  <div id="content"><p>Loading…</p></div>
+</main>
+<script>
+const content = document.getElementById("content");
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
+}
+
+function problemList(problems) {
+  return `<ul>${problems.map(problem => `<li>${escapeHtml(problem)}</li>`).join("")}</ul>`;
+}
+
+function teamForms(state) {
+  const team = state.team;
+  const onePassword = team.onePassword ? `
+    <form class="card" data-team="1password">
+      <h2>Sync it from 1Password</h2>
+      <div class="fields">
+        <div>
+          <label for="item">1Password item</label>
+          <input autocomplete="off" id="item" placeholder="the item of the team file" type="text" value="${escapeHtml(team.item)}">
+        </div>
+        <div>
+          <label for="vault">Vault</label>
+          <input autocomplete="off" id="vault" placeholder="empty for any vault" type="text" value="${escapeHtml(team.vault)}">
+        </div>
+      </div>
+      <div class="hint">Fetches the team file from 1Password, checks that it has every setting, saves it and restarts LDP Releaser. 1Password may ask you to authorize the CLI.</div>
+      <div><button type="submit">Sync from 1Password</button></div>
+      <div class="form-error"></div>
+    </form>` : "";
+
+  return `
+    <div class="card">
+      <p><strong>The team settings (ldp-releaser.team.toml) need to be replaced:</strong></p>
+      ${problemList(team.problems)}
+      <p class="hint">Get the file from the owner of the team settings; it is shared privately.</p>
+    </div>
+    ${onePassword}
+    <form class="card" data-team="file">
+      <h2>${team.onePassword ? "Or use" : "Use"} a file on this machine</h2>
+      <div>
+        <label for="team-path">Path to ldp-releaser.team.toml</label>
+        <input autocomplete="off" id="team-path" placeholder="~/Downloads/ldp-releaser.team.toml" type="text">
+      </div>
+      <div><button type="submit">Use this file</button></div>
+      <div class="form-error"></div>
+    </form>`;
+}
+
+function personalForm(state) {
+  const fieldKeys = new Set(state.fields.map(field => field.key));
+  const others = state.problems.filter(problem => ![...fieldKeys].some(key => problem.startsWith(key + " ")) &&
+    !state.fields.some(field => field.problem === problem));
+
+  const fields = state.fields.map(field => {
+    const id = `field-${field.key}`;
+    const secret = field.kind === "secret";
+    let placeholder = field.required ? "Required" : "Optional";
+
+    if (secret && field.set) {
+      placeholder = "Saved; leave empty to keep it";
+    }
+
+    const note = field.environment ? `<div class="hint">Set by an environment variable; change it there.</div>` : "";
+
+    return `
+      <div>
+        <label for="${id}">${escapeHtml(field.label)} ${field.set && !field.problem ? '<span class="set">set</span>' : ""}</label>
+        <input autocomplete="off" data-key="${escapeHtml(field.key)}" id="${id}" placeholder="${placeholder}"
+          type="${secret ? "password" : "text"}" value="${secret ? "" : escapeHtml(field.value)}"
+          ${field.environment ? "disabled" : ""} ${field.problem ? 'class="invalid"' : ""}>
+        ${note}
+        <div class="problem" id="${id}-problem">${escapeHtml(field.problem || "")}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <form class="card" data-personal>
+      <p><strong>Your personal settings need attention.</strong> They are saved only on this machine, readable only by you, and checked the same way as in the terminal setup.</p>
+      ${others.length ? problemList(others.concat(["Fix these with ./ldp-releaser --setup in a terminal."])) : ""}
+      <div class="fields">${fields}</div>
+      <div><button type="submit">Save and start</button></div>
+      <div class="form-error"></div>
+    </form>`;
+}
+
+async function load() {
+  const state = await (await fetch("/api/setup")).json();
+
+  content.innerHTML = state.team.problems.length ? teamForms(state) : personalForm(state);
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    body: JSON.stringify(body),
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  return {body: await response.json(), ok: response.ok, status: response.status};
+}
+
+async function waitForRestart(button) {
+  button.textContent = "Restarting…";
+
+  // After the restart, either the releaser answers /api/config, or this page
+  // answers /api/setup with what is still missing.
+
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  while (true) {
+    for (const path of ["/api/config", "/api/setup"]) {
+      try {
+        if ((await fetch(path)).ok) {
+          location.reload();
+
+          return;
+        }
+      }
+      catch (exception) {
+      }
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+}
+
+content.addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const form = event.target;
+  const button = form.querySelector("button");
+  const error = form.querySelector(".form-error");
+  const label = button.textContent;
+
+  button.disabled = true;
+  button.textContent = "Checking…";
+  error.textContent = "";
+
+  let result;
+
+  if (form.dataset.team === "1password") {
+    result = await post("/api/setup/team", {item: form.querySelector("#item").value, vault: form.querySelector("#vault").value});
+  }
+  else if (form.dataset.team === "file") {
+    result = await post("/api/setup/team", {path: form.querySelector("#team-path").value});
+  }
+  else {
+    const values = {};
+
+    form.querySelectorAll("input[data-key]:not(:disabled)").forEach(input => {
+      values[input.dataset.key] = input.value;
+      input.classList.remove("invalid");
+      document.getElementById(`${input.id}-problem`).textContent = "";
+    });
+
+    result = await post("/api/setup", {values});
+
+    Object.entries(result.body.errors || {}).forEach(([key, message]) => {
+      const input = document.getElementById(`field-${key}`);
+
+      if (input) {
+        input.classList.add("invalid");
+        document.getElementById(`field-${key}-problem`).textContent = message;
+      }
+    });
+  }
+
+  if (!result.ok) {
+    button.disabled = false;
+    button.textContent = label;
+    error.textContent = result.body.errors ? "Fix the settings marked above." : result.body.error || `Request failed (${result.status})`;
+
+    return;
+  }
+
+  waitForRestart(button);
+});
+
+load();
+</script>
+</body>
+</html>

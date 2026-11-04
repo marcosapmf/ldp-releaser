@@ -9,7 +9,7 @@ import urllib.error
 if sys.version_info < (3, 11):
     sys.exit("LDP Releaser needs Python 3.11 or newer")
 
-from . import config, gcloud, release, server, store, team_sync, wizard
+from . import config, gcloud, release, server, setup_mode, store, wizard
 from .clients import Jenkins, Jira
 
 
@@ -23,21 +23,13 @@ def main():
 
     arguments = parser.parse_args()
 
-    # Started without a terminal (for example by the Claude Code skill), the
-    # setup cannot ask for a new team file, so a page offers to sync it.
+    # With nobody to answer the terminal setup (started detached, for example
+    # by the Claude Code skill or a dashboard), a page asks instead.
 
-    team_problems = team_sync.problems()
     personal = config.read_toml(config.PERSONAL_FILE) or {}
 
-    if (team_problems and not arguments.setup and not sys.stdin.isatty() and
-            team_sync.available(personal)):
-
-        try:
-            team_sync.serve(personal, team_problems)
-        except KeyboardInterrupt:
-            pass
-
-        return
+    if not arguments.setup and not wizard.can_ask() and setup_mode.problems(personal):
+        return serve_setup(personal)
 
     try:
         wizard.ensure_configured(force=arguments.setup)
@@ -60,7 +52,16 @@ def main():
         settings["jenkins.token"], settings["jenkins.user"])
     jira = Jira(settings["jira.url"], settings["jira.token"], settings["jira.email"])
 
-    account = check_credentials(jenkins, jira)
+    account, rejected = check_credentials(jenkins, jira)
+
+    if rejected:
+        if wizard.can_ask():
+            sys.exit(
+                "\n".join(
+                    f"{message}. Run ./ldp-releaser --setup to update them."
+                    for message in rejected.values()))
+
+        return serve_setup(personal, rejected)
 
     # Configurations added to the team file after someone's setup are
     # created on their next start. Existing ones are left untouched.
@@ -95,40 +96,47 @@ def main():
 
 def check_credentials(jenkins, jira):
 
-    # A rejected token stops here with a clear message instead of failing in
-    # the middle of a release. An unreachable server is only a warning; the
-    # page shows it in the setup panel.
+    # Returns the Jira account and the settings Jenkins or Jira rejected, so
+    # a rejected token stops the start instead of failing in the middle of a
+    # release. An unreachable server is only a warning; the page shows it in
+    # the setup panel.
+
+    account = None
+    rejected = {}
 
     try:
         jenkins.check()
     except urllib.error.HTTPError as exception:
         if exception.code in (401, 403):
-            sys.exit(
-                "Jenkins rejected your user and token. Run ./ldp-releaser "
-                "--setup to update them.")
+            rejected["jenkins.token"] = "Jenkins rejected your user and token"
     except (OSError, urllib.error.URLError) as exception:
         print(f"Warning: Jenkins is not reachable ({exception})", flush=True)
 
     try:
-        account = jira.check()
+        found = jira.check()
 
         # The page only needs to tell your tickets from your teammates'.
 
-        return {
-            "accountId": account.get("accountId"),
-            "displayName": account.get("displayName"),
+        account = {
+            "accountId": found.get("accountId"),
+            "displayName": found.get("displayName"),
         }
     except RuntimeError as exception:
         if "(401)" in str(exception) or "(403)" in str(exception):
-            sys.exit(
-                "Jira rejected your email and token. Run ./ldp-releaser --setup "
-                "to update them.")
-
-        print(f"Warning: Jira check failed ({exception})", flush=True)
+            rejected["jira.token"] = "Jira rejected your email and token"
+        else:
+            print(f"Warning: Jira check failed ({exception})", flush=True)
     except (OSError, urllib.error.URLError) as exception:
         print(f"Warning: Jira is not reachable ({exception})", flush=True)
 
-    return None
+    return account, rejected
+
+
+def serve_setup(personal, rejected=None):
+    try:
+        setup_mode.serve(personal, rejected)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

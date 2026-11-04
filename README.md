@@ -50,6 +50,14 @@ Then open `http://127.0.0.1:<port>`. Later starts go straight to the page.
 Run `./ldp-releaser --setup` to replace the team file or change your
 credentials, for example after a token rotation.
 
+Started with nobody to answer (stdin at `/dev/null`, as the Claude Code skill
+and dashboards start it), LDP Releaser never waits for an answer. While a
+setting is missing, or Jenkins or Jira rejects a saved token, it serves a
+setup page at the same address instead of the releaser. The page asks only
+for what needs attention (the team file first), checks each answer as the
+terminal setup does, saves it and restarts. Piped answers still go to the
+terminal setup.
+
 Both files are saved in `~/.config/ldp-releaser/` and are readable only by
 you. They contain secrets: never share your personal file, and never commit
 either of them.
@@ -65,7 +73,8 @@ ln -s "$PWD/skill" ~/.claude/skills/ldp-releaser
 ```
 
 The server it starts keeps running after the Claude session ends; its log is
-`~/.local/state/ldp-releaser/server.log`.
+`~/.local/state/ldp-releaser/server.log`. When settings are missing, the page
+it opens is the setup page.
 
 ## Settings
 
@@ -92,13 +101,14 @@ version of LDP Releaser needs a setting your copy does not have:
 
 - Started from a terminal, it lists the missing settings and asks for an
   updated file, as the first setup does.
-- Started without one (for example by the Claude Code skill), it shows a page
-  instead of the releaser, listing the missing settings, with **Sync from
-  1Password**. That fetches the team file (from the item you fetched it from
-  during setup, or one you enter), checks that it has them, saves it and
-  restarts; unfinished runs resume as after any restart. If the file in
-  1Password lacks them too, nothing changes and the page says so: the owner
-  adds them to the shared file first.
+- Started without one (for example by the Claude Code skill), it shows the
+  setup page instead of the releaser, listing the missing settings, with
+  **Sync from 1Password**. That fetches the team file (from the item you
+  fetched it from during setup, or one you enter), checks that it has them,
+  saves it and restarts; unfinished runs resume as after any restart. You can
+  also give the path to a file on this machine. If the file in 1Password
+  lacks them too, nothing changes and the page says so: the owner adds them
+  to the shared file first.
 
 To get other changes to the shared file, run `./ldp-releaser --setup`, answer
 yes to replacing the team settings, and fetch it again.
@@ -259,8 +269,15 @@ curl -H "Authorization: Bearer $(cat ~/.config/ldp-releaser/api-token)" \
 - `GET /api/v1/runs` lists runs without their logs; filter with `kind`,
   `status` and `limit`. `GET /api/v1/runs/<id>` has the logs, and every run
   lists its `actions`.
-- While the team settings need a sync, every call answers 503 with the
-  missing settings in `problems`.
+- While LDP Releaser waits for its settings (see Getting started), every call
+  answers 503 with the reasons in `problems`, except the setup calls:
+  `GET /api/v1/setup` lists the team file's problems and each personal
+  setting (whether it is set, and what is wrong with it), `POST
+  /api/v1/setup` with `{"values": {"jira.token": "..."}}` checks the values
+  as the terminal setup does, saves them and restarts, and `POST
+  /api/v1/setup/team` saves the team file from 1Password (`item`, `vault`)
+  or a `path`. The token file exists before the setup page starts, so a
+  dashboard can start LDP Releaser and set it up without a terminal.
 
 The actions skip the page's confirmation dialogs, so a dashboard should ask
 before calling them. The API only answers on `127.0.0.1`, like the page. A
