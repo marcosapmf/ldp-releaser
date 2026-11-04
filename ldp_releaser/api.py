@@ -5,7 +5,7 @@ same-site checks."""
 import hmac
 import secrets
 
-from . import config, fixes
+from . import argocd, config, fixes
 
 TOKEN_FILE = config.CONFIG_DIR / "api-token"
 
@@ -27,7 +27,7 @@ def attention(runs, settings):
         if run["finishedAt"]:
             continue
 
-        waiting = [action for action in run_actions(run, settings) if action["kind"] in WAITING_ACTIONS]
+        waiting = [action for action in run_actions(run, settings) if waits_for_person(run, action, settings)]
 
         for stage in dict.fromkeys(action["stage"] for action in waiting):
             stage_actions = [action for action in waiting if action["stage"] == stage]
@@ -157,3 +157,14 @@ def stage_summary(stage):
         summary["fix"] = {key: value for key, value in stage["fix"].items() if key != "log"}
 
     return summary
+
+
+def waits_for_person(run, action, settings):
+
+    # When Argo CD checks the rollout of every environment of the run, the
+    # rollout button is only an override, so nobody is waited for.
+
+    if action["kind"] == "confirm-rollout":
+        return not set(run.get("releaseEnvironments") or []) <= argocd.watched(settings)
+
+    return action["kind"] in WAITING_ACTIONS

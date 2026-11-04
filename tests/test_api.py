@@ -120,6 +120,43 @@ class ApiTest(AppTestCase):
 
         self.assertEqual(set(), routes - documented - {"/api/v1", "/api/v1/openapi.json"})
 
+    def test_rollout_checked_by_argocd_waits_for_nobody(self):
+
+        # STG has an Argo CD token, so the rollout is confirmed automatically;
+        # the button stays on the run as an override.
+
+        self.fakes.argocd_apps["team-stg-asah"]["syncing"] = 10
+
+        status, body, _ = self.request(
+            "POST", "/api/v1/runs", {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-1234567"})
+
+        self.assertEqual(201, status, body)
+
+        run_id = body["id"]
+        deadline = time.time() + 60
+
+        while time.time() < deadline:
+            run = self.request("GET", f"/api/v1/runs/{run_id}")[1]
+
+            if "Checking STG in Argo CD" in (run["stages"]["rollout"]["why"] or ""):
+                break
+
+            time.sleep(0.1)
+
+        self.assertIn("confirm-rollout", [action["kind"] for action in run["actions"]])
+        self.assertNotIn("confirm-rollout", [item["kind"] for item in self.request("GET", "/api/v1/attention")[1]])
+        self.assertEqual(0, self.request("GET", "/api/v1/status")[1]["attention"])
+
+        item = self.wait_for_attention("close-tickets")
+        keep = item["actions"][1]
+
+        self.assertEqual(202, self.request(keep["method"], keep["path"], {})[0])
+
+        run = self.wait(run_id)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertIn("rollout confirmed by Argo CD", run["stages"]["rollout"]["log"])
+
     def test_release_is_answered_through_attention(self):
         status, body, _ = self.request(
             "POST", "/api/v1/runs", {"releaseEnvironments": ["int"], "tagSuffix": "20260101-1234567"})
