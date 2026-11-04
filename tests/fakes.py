@@ -2,8 +2,11 @@
 
 Jenkins builds behave according to the branch they are given:
     broken  -> the build fails
+    down    -> Jenkins answers 502 for good after the first request
     flaky   -> every third request about the build gets a 403
     hold    -> the build runs until `release_builds()` is called
+    outage  -> Jenkins answers 502 to 12 requests in a row, then denies
+               Overall/Read to 4 more, as while it restarts, then works again
     slow    -> the build waits in the queue for a few polls
 """
 
@@ -261,6 +264,13 @@ class FakeServices:
 
         if branch == "flaky" and build["hits"] % 3 == 0:
             return send_text(request, 403, "<h1>Access Denied</h1><p>try later</p>")
+
+        if (branch == "outage" and 2 <= build["hits"] <= 13) or (branch == "down" and build["hits"] >= 2):
+            return send_text(request, 502, "<h1>502 Server Error</h1><p>Please try again in 30 seconds.</p>")
+
+        if branch == "outage" and 14 <= build["hits"] <= 17:
+            return send_text(
+                request, 403, "<h1>Access Denied</h1><p>tester is missing the Overall/Read permission</p>")
 
         if action == "stop":
             build["stopped"] = True

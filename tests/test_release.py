@@ -77,6 +77,29 @@ class ReleaseTest(AppTestCase):
         self.assertIn("Access Denied", log)
         self.assertIn("retrying", log)
 
+    def test_jenkins_outage_does_not_fail_the_build(self):
+
+        # Jenkins' gateway answers 502, then Jenkins denies Overall/Read while
+        # it restarts, 16 requests in all: more than the retries for other
+        # errors allow, while the build keeps running there.
+
+        run = self.run_release({"asahBranch": "outage"})
+
+        log = run["stages"]["asahBuild"]["log"]
+
+        self.assertEqual("success", run["status"])
+        self.assertEqual("success", run["stages"]["asahBuild"]["status"])
+        self.assertIn("Jenkins answers again after", log)
+        self.assertIn("Overall/Read", log)
+        self.assertIn("the build keeps running in Jenkins", log)
+        self.assertIsNone(run["stages"]["asahBuild"]["why"])
+
+    def test_jenkins_down_for_good_fails_the_run(self):
+        run = self.run_release({"asahBranch": "down"})
+
+        self.assertEqual("failed", run["status"])
+        self.assertIn("502", run["error"])
+
     def test_non_prd_release_asks_about_the_tickets(self):
         run = self.run_release(
             {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-1111111"},
