@@ -364,6 +364,7 @@ class AppTestCase(unittest.TestCase):
             GIT_COMMITTER_NAME="Test",
             LDP_ARGOCD_POLL_SECONDS="0.2",
             LDP_DATAFLOW_POLL_SECONDS="0.05",
+            LDP_JENKINS_OUTAGE_SECONDS="8",
             LDP_LOGIN_POLL_SECONDS="0.2",
             LDP_MERGE_POLL_SECONDS="0.2",
             LDP_POLL_SECONDS="0.05",

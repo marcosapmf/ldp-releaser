@@ -23,8 +23,10 @@ from pathlib import Path
 LOG_TAIL_CHARS = 60_000
 ARGOCD_POLL_SECONDS = float(os.environ.get("LDP_ARGOCD_POLL_SECONDS", "30"))
 MERGE_POLL_SECONDS = float(os.environ.get("LDP_MERGE_POLL_SECONDS", "60"))
+JENKINS_OUTAGE_SECONDS = float(os.environ.get("LDP_JENKINS_OUTAGE_SECONDS", "1800"))
 POLL_RETRIES = 10
 POLL_SECONDS = float(os.environ.get("LDP_POLL_SECONDS", "5"))
+TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 
 ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 BRANCH_PATTERN = re.compile(r"[\w./-]+")
@@ -752,6 +754,13 @@ def finish(run):
         run["finishedAt"] = time.time()
 
     on_change(run)
+
+
+def format_duration(seconds):
+    if seconds < 90:
+        return f"{round(seconds)}s"
+
+    return f"{round(seconds / 60)} min"
 
 
 def free_branch_name(run, stage_name):
@@ -1980,29 +1989,71 @@ def rollout_states(environments, run):
 def with_retries(run, stage_name, function):
 
     # Watching a build means polling Jenkins for minutes, so one refused or
-    # dropped request is retried instead of failing the whole run.
+    # dropped request is retried instead of failing the whole run. While
+    # Jenkins or its gateway is down (5xx, 429 or no connection) the build
+    # keeps running there, so those are retried for JENKINS_OUTAGE_SECONDS;
+    # other errors only POLL_RETRIES times.
 
-    for attempt in range(1, POLL_RETRIES + 1):
+    attempt = 0
+    failing_since = None
+
+    while True:
+        attempt += 1
+
         try:
-            return function()
+            result = function()
         except urllib.error.HTTPError as exception:
-            if exception.code == 404 or attempt == POLL_RETRIES:
+            if exception.code == 404:
                 raise
 
             body = exception.read().decode("utf-8", "replace")
             detail = " ".join(re.sub(r"<[^>]+>", " ", body).split())[:300]
+            failure = exception
+            problem = f"{exception} {detail}"
 
-            append_log(
-                run, stage_name,
-                f"[LDP Releaser] Jenkins request failed ({exception}) {detail}, "
-                f"retrying ({attempt}/{POLL_RETRIES - 1})\n")
+            # Right after a restart Jenkins denies everyone Overall/Read until
+            # its security setup is loaded again.
+
+            outage = exception.code in TRANSIENT_HTTP_CODES or (
+                exception.code == 403 and "Overall/Read" in detail)
         except (OSError, urllib.error.URLError) as exception:
-            if attempt == POLL_RETRIES:
-                raise
+            failure = exception
+            problem = str(exception)
+            outage = True
+        else:
+            if failing_since is not None:
+                append_log(
+                    run, stage_name,
+                    f"[LDP Releaser] Jenkins answers again after "
+                    f"{format_duration(time.time() - failing_since)}\n")
+                update_stage(run, stage_name, why=None)
 
+            return result
+
+        if failing_since is None:
+            failing_since = time.time()
+
+        down_for = time.time() - failing_since
+
+        if (outage and down_for >= JENKINS_OUTAGE_SECONDS) or (
+                not outage and attempt >= POLL_RETRIES):
+
+            raise failure
+
+        if outage:
             append_log(
                 run, stage_name,
-                f"[LDP Releaser] Jenkins request failed ({exception}), "
+                f"[LDP Releaser] Jenkins request failed ({problem}), retrying for up to "
+                f"{format_duration(JENKINS_OUTAGE_SECONDS)}; the build keeps running in "
+                f"Jenkins\n")
+            update_stage(
+                run, stage_name,
+                why=f"Jenkins is not answering ({problem.split(':')[0]}) for "
+                    f"{format_duration(down_for)}; still watching the build")
+        else:
+            append_log(
+                run, stage_name,
+                f"[LDP Releaser] Jenkins request failed ({problem}), "
                 f"retrying ({attempt}/{POLL_RETRIES - 1})\n")
 
         time.sleep(min(30, POLL_SECONDS * attempt))
