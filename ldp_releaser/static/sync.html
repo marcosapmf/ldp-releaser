@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDP Releaser</title>
+<style>
+:root {
+  --accent: #2f6fde;
+  --accent-text: #ffffff;
+  --bg: #f5f6f8;
+  --border: #dde1e7;
+  --fail: #c43a3a;
+  --muted: #5d6877;
+  --surface: #ffffff;
+  --text: #1b232e;
+  --warn: #b26f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #5d8ff0;
+    --bg: #0f1318;
+    --border: #2a323d;
+    --fail: #e46767;
+    --muted: #95a1b1;
+    --surface: #171c23;
+    --text: #e4e9ef;
+    --warn: #e2a54a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+}
+main { margin: 0 auto; max-width: 860px; padding: 32px 16px 64px; }
+h1 { font-size: 22px; margin: 0 0 24px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+}
+.card p { margin: 0; }
+ul { margin: 0; padding-left: 20px; }
+li { color: var(--fail); overflow-wrap: anywhere; }
+.fields { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+input[type=text] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px 11px;
+  width: 100%;
+}
+.hint { color: var(--muted); font-size: 13px; }
+button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  color: var(--accent-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 18px;
+}
+button:disabled { cursor: progress; opacity: .6; }
+.form-error { color: var(--fail); min-height: 1em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LDP Releaser</h1>
+
+  <form class="card" id="form">
+    <p><strong>Your team settings lack settings this version of LDP Releaser needs:</strong></p>
+    <ul id="problems"></ul>
+    <div class="fields">
+      <div>
+        <label for="item">1Password item</label>
+        <input autocomplete="off" id="item" placeholder="the item of the team file" type="text">
+      </div>
+      <div>
+        <label for="vault">Vault</label>
+        <input autocomplete="off" id="vault" placeholder="empty for any vault" type="text">
+      </div>
+    </div>
+    <div class="hint">Fetches the team file from 1Password, checks that it has them, saves it and restarts LDP Releaser. 1Password may ask you to authorize the CLI.</div>
+    <div><button id="sync" type="submit">Sync from 1Password</button></div>
+    <div class="form-error" id="error"></div>
+  </form>
+</main>
+<script>
+const button = document.getElementById("sync");
+const error = document.getElementById("error");
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, character => `&#${character.charCodeAt(0)};`);
+}
+
+async function start() {
+  const state = await (await fetch("/api/team-sync")).json();
+
+  document.getElementById("problems").innerHTML = state.problems.map(problem => `<li>${escapeHtml(problem)}</li>`).join("");
+  document.getElementById("item").value = state.item || "";
+  document.getElementById("vault").value = state.vault || "";
+}
+
+document.getElementById("form").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  button.disabled = true;
+  button.textContent = "Syncing…";
+  error.textContent = "";
+
+  const response = await fetch("/api/team-sync", {
+    body: JSON.stringify({item: document.getElementById("item").value, vault: document.getElementById("vault").value}),
+    headers: {"Content-Type": "application/json"},
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    button.disabled = false;
+    button.textContent = "Sync from 1Password";
+    error.textContent = (await response.json()).error || `Request failed (${response.status})`;
+
+    return;
+  }
+
+  button.textContent = "Restarting…";
+
+  // The releaser answers /api/config once it is up again; this page does not.
+
+  await new Promise(resolve => setTimeout(resolve, 1500));
+
+  while (true) {
+    try {
+      if ((await fetch("/api/config")).ok) {
+        location.reload();
+
+        return;
+      }
+    }
+    catch (exception) {
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+});
+
+start();
+</script>
+</body>
+</html>

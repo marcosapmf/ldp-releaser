@@ -87,22 +87,21 @@ one. With the 1Password CLI:
 op document edit "<item>" ~/.config/ldp-releaser/ldp-releaser.team.toml --vault "<vault>"
 ```
 
-Everyone who fetched the file with the 1Password CLI during setup is told
-on the page: while it is open, LDP Releaser checks that 1Password item at
-most once an hour (1Password may ask you to authorize the CLI). A newer
-version shows which settings changed, by name only, and **Update and
-restart** replaces the local copy and restarts the server; unfinished runs
-resume as after any restart. It waits while a run is in a step that a
-restart would stop halfway, such as opening a pull request. A version this
-LDP Releaser cannot use is shown with its problems and is not offered. When
-your local copy was changed after the version in 1Password, the page shows
-the command to upload it instead, so nothing undoes your edits.
+LDP Releaser never checks 1Password while your copy works. When a newer
+version of LDP Releaser needs a setting your copy does not have:
 
-Teammates who gave a file path instead run `./ldp-releaser --setup`, answer
-yes to replacing the team settings, and fetch it again. If a newer version
-of LDP Releaser needs a setting the file does not have yet, the next start
-lists the missing settings and asks for an updated file: add them to the
-shared file the same way, then fetch it again.
+- Started from a terminal, it lists the missing settings and asks for an
+  updated file, as the first setup does.
+- Started without one (for example by the Claude Code skill), it shows a page
+  instead of the releaser, listing the missing settings, with **Sync from
+  1Password**. That fetches the team file (from the item you fetched it from
+  during setup, or one you enter), checks that it has them, saves it and
+  restarts; unfinished runs resume as after any restart. If the file in
+  1Password lacks them too, nothing changes and the page says so: the owner
+  adds them to the shared file first.
+
+To get other changes to the shared file, run `./ldp-releaser --setup`, answer
+yes to replacing the team settings, and fetch it again.
 
 Personal settings can also come from environment variables, which take
 precedence over the file: `LDP_JENKINS_USER`, `LDP_JENKINS_TOKEN`,
@@ -241,8 +240,8 @@ Other tools, such as a dashboard, get everything the page shows and does
 under `/api/v1`: runs and their steps, what waits for a person, the setup
 checks, the forms' options, and the actions (start a release, a Composer or
 Dataflow run, confirm a rollout, close or keep the tickets, drain and
-relaunch, explain a failure, apply fixes, log in to gcloud, update the team
-settings). `GET /api/v1/openapi.json` describes every call.
+relaunch, explain a failure, apply fixes, log in to gcloud).
+`GET /api/v1/openapi.json` describes every call.
 
 Each call needs the token that the first start writes to
 `~/.config/ldp-releaser/api-token` (readable only by you):
@@ -255,11 +254,13 @@ curl -H "Authorization: Bearer $(cat ~/.config/ldp-releaser/api-token)" \
 - `GET /api/v1/status` gives counts for a dashboard tile and the latest run
   of each kind.
 - `GET /api/v1/attention` lists what waits for a person (a rollout to
-  confirm, tickets to close, a Dataflow job to relaunch, a gcloud login, a
-  team settings update), each with the calls that answer it.
+  confirm, tickets to close, a Dataflow job to relaunch, a gcloud login),
+  each with the calls that answer it.
 - `GET /api/v1/runs` lists runs without their logs; filter with `kind`,
   `status` and `limit`. `GET /api/v1/runs/<id>` has the logs, and every run
   lists its `actions`.
+- While the team settings need a sync, every call answers 503 with the
+  missing settings in `problems`.
 
 The actions skip the page's confirmation dialogs, so a dashboard should ask
 before calling them. The API only answers on `127.0.0.1`, like the page. A

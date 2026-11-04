@@ -5,7 +5,7 @@ same-site checks."""
 import hmac
 import secrets
 
-from . import config, fixes, team_update
+from . import config, fixes
 
 TOKEN_FILE = config.CONFIG_DIR / "api-token"
 
@@ -42,28 +42,6 @@ def attention(runs, settings):
                 "stage": stage,
                 "why": run["stages"][stage]["why"],
             })
-
-    update = team_update.current(settings)
-
-    if update["status"] in ("available", "local-newer"):
-        actions = []
-
-        if update["status"] == "available":
-            actions.append(action("team-update", "Update and restart", "/api/v1/team-update"))
-
-        items.append({
-            "actions": actions,
-            "kind": "team-update",
-            "links": [],
-            "runId": None,
-            "runTitle": None,
-            "since": update["checkedAt"],
-            "stage": None,
-            "why": {
-                "available": "There is a newer version of the team settings in 1Password.",
-                "local-newer": "The local team settings were changed after the version in 1Password; upload them.",
-            }[update["status"]],
-        })
 
     return items
 

@@ -12,7 +12,7 @@ log=~/.local/state/ldp-releaser/server.log
 port=$(python3 -c '
 import pathlib, tomllib
 path = pathlib.Path.home() / ".config/ldp-releaser/config.toml"
-print(tomllib.loads(path.read_text()).get("port", 8766) if path.exists() else 8766)')
+print(tomllib.loads(path.read_text()).get("server", {}).get("port", 8766) if path.exists() else 8766)')
 url="http://127.0.0.1:${port}/"
 
 running() {

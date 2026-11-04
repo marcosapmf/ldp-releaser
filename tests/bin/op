@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Fake 1Password CLI for the tests. `op document get <item> [--vault <vault>]`
-prints the file FAKE_OP_STATE/<vault>/<item>, `op item get` gives its
-modification time as updated_at, and every call is logged to
+prints the file FAKE_OP_STATE/<vault>/<item>, and every call is logged to
 FAKE_OP_STATE/calls."""
 
-import json
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 STATE_DIR = Path(os.environ.get("FAKE_OP_STATE", "/nonexistent"))
@@ -18,7 +15,7 @@ if STATE_DIR.is_dir():
     with (STATE_DIR / "calls").open("a") as file:
         file.write(" ".join(arguments) + "\n")
 
-if arguments[:2] not in (["document", "get"], ["item", "get"]) or len(arguments) < 3:
+if arguments[:2] != ["document", "get"] or len(arguments) < 3:
     sys.exit(f"[ERROR] unsupported fake op command: {arguments}")
 
 vault = "default"
@@ -31,9 +28,4 @@ document = STATE_DIR / vault / arguments[2]
 if not document.is_file():
     sys.exit(f'[ERROR] "{arguments[2]}" isn\'t an item in the "{vault}" vault')
 
-if arguments[0] == "item":
-    updated_at = datetime.fromtimestamp(document.stat().st_mtime, timezone.utc)
-
-    print(json.dumps({"updated_at": updated_at.isoformat().replace("+00:00", "Z")}))
-else:
-    sys.stdout.write(document.read_text())
+sys.stdout.write(document.read_text())

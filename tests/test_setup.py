@@ -109,7 +109,7 @@ class SetupTest(AppTestCase):
 
     def test_team_file_from_1password_is_remembered(self):
 
-        # The page checks the same item for newer versions later.
+        # The sync page offers the same item later.
 
         vault = self.temp / "op" / "Shared"
         vault.mkdir(parents=True)

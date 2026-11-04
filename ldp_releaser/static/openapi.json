@@ -29,7 +29,7 @@
         "description": "A call that answers or acts on a run, as the page's buttons do",
         "properties": {
           "body": {"type": ["object", "null"]},
-          "kind": {"type": "string", "enum": ["apply-fixes", "cancel", "close-tickets", "confirm-rollout", "explain-failure", "gcloud-login", "keep-tickets", "relaunch-dataflow", "team-update"]},
+          "kind": {"type": "string", "enum": ["apply-fixes", "cancel", "close-tickets", "confirm-rollout", "explain-failure", "gcloud-login", "keep-tickets", "relaunch-dataflow"]},
           "label": {"type": "string"},
           "method": {"type": "string", "enum": ["POST"]},
           "path": {"type": "string"},
@@ -41,7 +41,7 @@
         "description": "Something waiting for a person",
         "properties": {
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/Action"}},
-          "kind": {"type": "string", "enum": ["close-tickets", "confirm-rollout", "gcloud-login", "relaunch-dataflow", "team-update"]},
+          "kind": {"type": "string", "enum": ["close-tickets", "confirm-rollout", "gcloud-login", "relaunch-dataflow"]},
           "links": {"type": "array", "items": {"$ref": "#/components/schemas/Link"}},
           "runId": {"type": ["string", "null"]},
           "runTitle": {"type": ["string", "null"]},
@@ -95,12 +95,11 @@
     },
     "/api/v1/status": {
       "get": {
-        "summary": "Counts for a dashboard tile: running runs, things waiting for a person, the team settings update",
+        "summary": "Counts for a dashboard tile: running runs and things waiting for a person, and the latest run of each kind",
         "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {
           "attention": {"type": "integer"},
           "latest": {"type": "object", "description": "The latest run of each kind", "additionalProperties": {"$ref": "#/components/schemas/Run"}},
-          "running": {"type": "integer"},
-          "teamUpdate": {"type": "string"}
+          "running": {"type": "integer"}
         }}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
       }
     },
@@ -214,18 +213,6 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string"}}}}}},
         "responses": {"202": {"description": "The login state"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}
       }
-    },
-    "/api/v1/team-update": {
-      "get": {
-        "summary": "Whether 1Password has another version of the team settings; `changes` lists setting names only",
-        "parameters": [{"in": "query", "name": "check", "schema": {"type": "string"}, "description": "Any value checks 1Password in the background, at most once an hour"}],
-        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {
-          "changes": {"type": "array", "items": {"type": "string"}},
-          "problems": {"type": "array", "items": {"type": "string"}},
-          "status": {"type": "string", "enum": ["available", "checking", "current", "invalid", "local-newer", "off", "unavailable", "unknown"]}
-        }}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
-      },
-      "post": {"summary": "Replace the team settings with the version in 1Password and restart; unfinished runs resume", "responses": {"202": {"description": "Restarting"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}}
     }
   }
 }

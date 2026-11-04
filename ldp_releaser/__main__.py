@@ -9,7 +9,7 @@ import urllib.error
 if sys.version_info < (3, 11):
     sys.exit("LDP Releaser needs Python 3.11 or newer")
 
-from . import config, gcloud, release, server, store, wizard
+from . import config, gcloud, release, server, store, team_sync, wizard
 from .clients import Jenkins, Jira
 
 
@@ -22,6 +22,22 @@ def main():
         help="ask for the team file and your credentials again")
 
     arguments = parser.parse_args()
+
+    # Started without a terminal (for example by the Claude Code skill), the
+    # setup cannot ask for a new team file, so a page offers to sync it.
+
+    team_problems = team_sync.problems()
+    personal = config.read_toml(config.PERSONAL_FILE) or {}
+
+    if (team_problems and not arguments.setup and not sys.stdin.isatty() and
+            team_sync.available(personal)):
+
+        try:
+            team_sync.serve(personal, team_problems)
+        except KeyboardInterrupt:
+            pass
+
+        return
 
     try:
         wizard.ensure_configured(force=arguments.setup)

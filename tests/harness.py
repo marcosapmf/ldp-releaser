@@ -367,7 +367,6 @@ class AppTestCase(unittest.TestCase):
             LDP_LOGIN_POLL_SECONDS="0.2",
             LDP_MERGE_POLL_SECONDS="0.2",
             LDP_POLL_SECONDS="0.05",
-            LDP_TEAM_CHECK_SECONDS="0",
             PATH=f"{ROOT / 'tests' / 'bin'}{os.pathsep}{os.environ['PATH']}",
             XDG_CONFIG_HOME=str(self.temp / "config"),
             XDG_DATA_HOME=str(self.temp / "data"),

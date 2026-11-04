@@ -259,7 +259,7 @@ def ask_team_file(problems, personal):
 
         config.write_private(config.TEAM_FILE, text)
 
-        # The page checks this item for newer versions of the file.
+        # The sync page fetches it again from this item when settings are missing.
 
         config.set_value(personal, "team.onepassword_item", source[0])
         config.set_value(personal, "team.onepassword_vault", source[1])
