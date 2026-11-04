@@ -1,8 +1,11 @@
 """First-run setup: asks for the team file and the personal settings in the
-terminal, checks each answer, and saves them where the server reads them."""
+terminal, checks each answer, and saves them where the server reads them.
+The checks are shared with the setup page."""
 
 import getpass
+import os
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -61,21 +64,17 @@ def ask_asah(personal, settings, force):
         return
 
     while True:
-        answer = ask(
-            "Path to your clone of " + settings["asah.repository"],
-            config.get_value(personal, key))
+        answer = ask(labels(settings)[key], config.get_value(personal, key))
 
-        path = Path(answer).expanduser()
+        problem, note = check_asah(settings, answer)
 
-        if not (path / ".git").exists():
-            print(f"  {path} is not a git clone, try again")
+        if problem:
+            print(f"  {problem}, try again")
 
             continue
 
-        if composer.matching_remote(str(path), settings["asah.repository"]) is None:
-            print(
-                f"  No remote points to {settings['asah.repository']}; versions "
-                f"will be fetched from GitHub over SSH")
+        if note:
+            print(f"  {note}")
 
         keep(personal, key, answer)
 
@@ -89,21 +88,9 @@ def ask_charts(personal, settings, force):
         return
 
     while True:
-        answer = ask(
-            "Path to your checkout of " + settings["charts.repository"],
-            config.get_value(personal, key))
+        answer = ask(labels(settings)[key], config.get_value(personal, key))
 
-        path = Path(answer).expanduser()
-
-        if not (path / ".git").exists():
-            print(f"  {path} is not a git checkout, try again")
-
-            continue
-
-        problem = health.check_charts(
-            config.Settings(
-                config.merge(
-                    settings.values(), {"charts": {"checkout": str(path)}})))
+        problem = check_charts(settings, answer)
 
         if problem:
             print(f"  {problem}, try again")
@@ -122,23 +109,16 @@ def ask_jenkins(personal, settings, force):
         return
 
     while True:
-        user = ask_value(personal, "jenkins.user", "Jenkins user ID")
+        user = ask_value(personal, "jenkins.user", labels(settings)["jenkins.user"])
         token = ask_value(
-            personal, "jenkins.token", "Jenkins API token", secret=True)
+            personal, "jenkins.token", labels(settings)["jenkins.token"], secret=True)
 
-        jenkins = Jenkins(
-            settings["jenkins.url"], settings["jenkins.folder"], token, user)
+        problem = check_jenkins(settings, user, token)
 
-        try:
-            jenkins.check()
-        except urllib.error.HTTPError as exception:
-            reject(
-                f"Jenkins rejected that user and token ({exception.code})",
-                ["jenkins.user", "jenkins.token"])
+        if problem:
+            reject(problem, ["jenkins.user", "jenkins.token"])
 
             continue
-        except (OSError, urllib.error.URLError) as exception:
-            raise SetupError(f"Jenkins is not reachable: {exception}")
 
         print("  Jenkins: OK")
 
@@ -155,19 +135,16 @@ def ask_jira(personal, settings, force):
         return
 
     while True:
-        email = ask_value(personal, "jira.email", "Atlassian account email")
+        email = ask_value(personal, "jira.email", labels(settings)["jira.email"])
         token = ask_value(
-            personal, "jira.token", "Atlassian API token", secret=True)
+            personal, "jira.token", labels(settings)["jira.token"], secret=True)
 
-        try:
-            account = Jira(settings["jira.url"], token, email).check()
-        except RuntimeError:
-            reject(
-                "Jira rejected that email and token", ["jira.email", "jira.token"])
+        problem, account = check_jira(settings, email, token)
+
+        if problem:
+            reject(problem, ["jira.email", "jira.token"])
 
             continue
-        except (OSError, urllib.error.URLError) as exception:
-            raise SetupError(f"Jira is not reachable: {exception}")
 
         print(f"  Jira: logged in as {account.get('displayName')}")
 
@@ -259,7 +236,7 @@ def ask_team_file(problems, personal):
 
         config.write_private(config.TEAM_FILE, text)
 
-        # The sync page fetches it again from this item when settings are missing.
+        # The setup page fetches it again from this item when settings are missing.
 
         config.set_value(personal, "team.onepassword_item", source[0])
         config.set_value(personal, "team.onepassword_vault", source[1])
@@ -289,6 +266,84 @@ def ask_value(personal, key, label, secret=False):
             return answer
 
         print(f"  {label} is required")
+
+
+def can_ask():
+
+    # Answers come from a terminal, or from a pipe (as in the tests). Started
+    # with stdin at /dev/null, as the Claude Code skill and dashboards start
+    # it, nobody can answer, so the setup page asks instead.
+
+    try:
+        status = os.fstat(sys.stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+
+    null = os.stat(os.devnull)
+
+    return not (stat.S_ISCHR(status.st_mode) and status.st_rdev == null.st_rdev)
+
+
+def check_asah(settings, answer):
+
+    # Returns why the path cannot be used, and a note that does not stop it.
+
+    path = Path(answer).expanduser()
+
+    if not (path / ".git").exists():
+        return f"{path} is not a git clone", None
+
+    if composer.matching_remote(str(path), settings["asah.repository"]) is None:
+        return None, (
+            f"No remote points to {settings['asah.repository']}; versions will "
+            f"be fetched from GitHub over SSH")
+
+    return None, None
+
+
+def check_charts(settings, answer):
+
+    # Returns why the path cannot be used, or None.
+
+    path = Path(answer).expanduser()
+
+    if not (path / ".git").exists():
+        return f"{path} is not a git checkout"
+
+    return health.check_charts(
+        config.Settings(
+            config.merge(settings.values(), {"charts": {"checkout": str(path)}})))
+
+
+def check_jenkins(settings, user, token):
+
+    # Returns why Jenkins rejected them, or None. An unreachable Jenkins
+    # stops the setup instead, since no answer can fix it.
+
+    jenkins = Jenkins(settings["jenkins.url"], settings["jenkins.folder"], token, user)
+
+    try:
+        jenkins.check()
+    except urllib.error.HTTPError as exception:
+        return f"Jenkins rejected that user and token ({exception.code})"
+    except (OSError, urllib.error.URLError) as exception:
+        raise SetupError(f"Jenkins is not reachable: {exception}")
+
+    return None
+
+
+def check_jira(settings, email, token):
+
+    # Returns why Jira rejected them, or None and the account behind them.
+
+    try:
+        account = Jira(settings["jira.url"], token, email).check()
+    except RuntimeError:
+        return "Jira rejected that email and token", None
+    except (OSError, urllib.error.URLError) as exception:
+        raise SetupError(f"Jira is not reachable: {exception}")
+
+    return None, account
 
 
 def ensure_configured(force=False):
@@ -377,6 +432,21 @@ def keep(personal, key, value):
 
     if config.environment_value(key, fallbacks=False) != value:
         config.set_value(personal, key, value)
+
+
+def labels(settings):
+
+    # The personal settings the setup asks for, in the terminal and on the
+    # setup page.
+
+    return {
+        "asah.checkout": "Path to your clone of " + settings["asah.repository"],
+        "charts.checkout": "Path to your checkout of " + settings["charts.repository"],
+        "jenkins.token": "Jenkins API token",
+        "jenkins.user": "Jenkins user ID",
+        "jira.email": "Atlassian account email",
+        "jira.token": "Atlassian API token",
+    }
 
 
 def needs_answer(personal, key, force):

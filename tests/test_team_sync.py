@@ -1,6 +1,6 @@
-"""A team file without settings this version needs: started without a
-terminal, LDP Releaser offers to sync it from 1Password, and never checks
-1Password while the file is complete."""
+"""A team file without settings this version needs: started with nobody to
+answer the terminal setup, LDP Releaser's setup page offers to sync it from
+1Password, and never checks 1Password while the file is complete."""
 
 import json
 import stat
@@ -58,14 +58,14 @@ class TeamSyncTestCase(AppTestCase):
 
     def start_app(self):
 
-        # The sync page has no /api/config, so wait for its own state.
+        # The setup page has no /api/config, so wait for its own state.
 
         if not self.local_team:
             return super().start_app()
 
         super_call = self.call
         self.call = lambda path, payload=None: super_call(
-            "/api/team-sync" if path == "/api/config" else path, payload)
+            "/api/setup" if path == "/api/config" else path, payload)
 
         try:
             super().start_app()
@@ -83,7 +83,11 @@ class CompleteTeamFileTest(TeamSyncTestCase):
 
     def test_1password_is_not_checked(self):
         self.assertEqual(200, self.call("/api/config")[0])
-        self.assertEqual(404, self.call("/api/team-sync")[0])
+
+        status, body = self.call("/api/setup")
+
+        self.assertEqual(200, status)
+        self.assertEqual([], body["problems"])
         self.assertEqual([], self.op_calls())
 
 
@@ -92,12 +96,13 @@ class MissingSettingTest(TeamSyncTestCase):
     local_team = staticmethod(lambda text: text.replace(MISSING, ""))
 
     def test_sync_page_saves_the_file_and_restarts(self):
-        status, body = self.call("/api/team-sync")
+        status, body = self.call("/api/setup")
 
         self.assertEqual(200, status)
-        self.assertEqual("team file", body["item"])
-        self.assertEqual(["release.prd_environment is missing"], body["problems"])
-        self.assertEqual("Shared", body["vault"])
+        self.assertEqual([], body["fields"])
+        self.assertEqual("team file", body["team"]["item"])
+        self.assertEqual(["release.prd_environment is missing"], body["team"]["problems"])
+        self.assertEqual("Shared", body["team"]["vault"])
 
         status, html = self.page("/")
 
@@ -113,7 +118,7 @@ class MissingSettingTest(TeamSyncTestCase):
         self.assertEqual([], self.op_calls())
 
         self.assertEqual(
-            202, self.call("/api/team-sync", {"item": "team file", "vault": "Shared"})[0])
+            202, self.call("/api/setup/team", {"item": "team file", "vault": "Shared"})[0])
 
         deadline = time.time() + 30
 
@@ -139,7 +144,7 @@ class MissingSettingTest(TeamSyncTestCase):
         (directory / "moved file").write_text(self.team_text())
 
         self.assertEqual(
-            202, self.call("/api/team-sync", {"item": "moved file", "vault": "Other"})[0])
+            202, self.call("/api/setup/team", {"item": "moved file", "vault": "Other"})[0])
 
         deadline = time.time() + 30
 
@@ -162,21 +167,23 @@ class MissingSettingTest(TeamSyncTestCase):
     def test_file_in_1password_without_them_changes_nothing(self):
         self.publish(self.team_text().replace(MISSING, ""))
 
-        status, body = self.call("/api/team-sync", {"item": "team file", "vault": "Shared"})
+        status, body = self.call("/api/setup/team", {"item": "team file", "vault": "Shared"})
 
         self.assertEqual(409, status)
-        self.assertIn("lacks them too: release.prd_environment is missing", body["error"])
+        self.assertIn(
+            "lacks settings this version needs: release.prd_environment is missing",
+            body["error"])
         self.assertEqual(self.team_text().replace(MISSING, ""), self.team_file().read_text())
 
     def test_unknown_item_is_reported(self):
-        status, body = self.call("/api/team-sync", {"item": "nothing", "vault": "Shared"})
+        status, body = self.call("/api/setup/team", {"item": "nothing", "vault": "Shared"})
 
         self.assertEqual(409, status)
         self.assertIn("isn't an item", body["error"])
 
     def test_other_sites_cannot_sync(self):
         request = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/api/team-sync",
+            f"http://127.0.0.1:{self.port}/api/setup/team",
             data=json.dumps({"item": "team file", "vault": "Shared"}).encode(),
             headers={"Content-Type": "application/json", "Origin": "https://elsewhere.example"},
             method="POST")

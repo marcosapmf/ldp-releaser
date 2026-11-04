@@ -8,7 +8,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import api, composer, dataflow, failure, fixes, gcloud, health, release
+from . import api, composer, config, dataflow, failure, fixes, gcloud, health, release, setup_mode
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
 OPENAPI_FILE = Path(__file__).parent / "static" / "openapi.json"
@@ -103,6 +103,14 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._send(200, body.encode(), "application/json")
 
+        if path == "/api/setup":
+
+            # Running means nothing needs attention; a dashboard asks the
+            # same question whether or not LDP Releaser waits for settings.
+
+            return self._send_json(
+                200, setup_mode.describe(config.read_toml(config.PERSONAL_FILE) or {}, {}))
+
         self._send_json(404, {"error": "Not found"})
 
     def do_OPTIONS(self):
@@ -182,6 +190,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(409, {"error": "No gcloud login is waiting for a code"})
 
             return self._send_json(202, self.gcloud_login.state())
+
+        if path in ("/api/setup", "/api/setup/team"):
+            return self._send_json(
+                409,
+                {"error": "LDP Releaser is already set up; run ./ldp-releaser --setup in a "
+                          "terminal to change its settings"})
 
         match = re.fullmatch(r"/api/runs/(\w+)/stages/([\w-]+)/failure", path)
 

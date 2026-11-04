@@ -3,7 +3,7 @@
   "info": {
     "title": "LDP Releaser API",
     "version": "1",
-    "description": "Everything the LDP Releaser page shows and does, for other tools such as a dashboard. The server only answers on 127.0.0.1. Every call except this description needs `Authorization: Bearer <token>`, with the token from ~/.config/ldp-releaser/api-token. Browser pages on another origin also need that origin in `api.allowed_origins` of the personal settings. Actions do what the page's buttons do, without the page's confirmation dialogs, so ask the person before calling them."
+    "description": "Everything the LDP Releaser page shows and does, for other tools such as a dashboard. The server only answers on 127.0.0.1. Every call except this description needs `Authorization: Bearer <token>`, with the token from ~/.config/ldp-releaser/api-token. Browser pages on another origin also need that origin in `api.allowed_origins` of the personal settings. Actions do what the page's buttons do, without the page's confirmation dialogs, so ask the person before calling them. While settings are missing or rejected and nobody can answer the terminal setup (for example when a dashboard starts LDP Releaser detached), only the setup calls and this description answer; every other call answers 503 with the reasons in `problems`."
   },
   "servers": [{"url": "http://127.0.0.1:8766"}],
   "security": [{"token": []}],
@@ -212,6 +212,54 @@
         "summary": "Send the verification code a gcloud login asks for",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string"}}}}}},
         "responses": {"202": {"description": "The login state"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}
+      }
+    },
+    "/api/v1/setup": {
+      "get": {
+        "summary": "What is missing or rejected, so a dashboard can set LDP Releaser up without a terminal; once it runs, `problems` is empty. The team file comes first: while it has `team.problems`, `fields` is empty",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "problems": {"type": "array", "items": {"type": "string"}, "description": "Why LDP Releaser cannot start"},
+          "team": {"type": "object", "properties": {
+            "item": {"type": ["string", "null"], "description": "The 1Password item the team file was fetched from"},
+            "onePassword": {"type": "boolean", "description": "Whether the 1Password CLI is installed"},
+            "problems": {"type": "array", "items": {"type": "string"}},
+            "vault": {"type": ["string", "null"]}
+          }},
+          "fields": {"type": "array", "description": "The personal settings, in the terminal setup's order", "items": {"type": "object", "properties": {
+            "environment": {"type": "boolean", "description": "Set by an environment variable, so it cannot be changed here"},
+            "key": {"type": "string", "description": "For example jira.token"},
+            "kind": {"type": "string", "enum": ["path", "secret", "str"]},
+            "label": {"type": "string"},
+            "problem": {"type": ["string", "null"]},
+            "required": {"type": "boolean"},
+            "set": {"type": "boolean"},
+            "value": {"type": ["string", "null"], "description": "The current value; always null for secrets"}
+          }}}
+        }}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      },
+      "post": {
+        "summary": "While LDP Releaser waits for its settings: check personal settings as the terminal setup does, save them and restart. An empty value keeps the current one. Once it runs, answers 409",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["values"], "properties": {
+          "values": {"type": "object", "description": "Field key to value, for example {\"jira.token\": \"...\"}", "additionalProperties": {"type": "string"}}
+        }}}}},
+        "responses": {
+          "202": {"description": "Saved; LDP Releaser restarts, then answers the API, or this call again with what is still missing"},
+          "400": {"description": "Some values were not accepted", "content": {"application/json": {"schema": {"type": "object", "properties": {"error": {"type": "string"}, "errors": {"type": "object", "description": "Field key to why it was not accepted", "additionalProperties": {"type": "string"}}}}}}},
+          "401": {"$ref": "#/components/responses/unauthorized"},
+          "409": {"$ref": "#/components/responses/conflict"},
+          "502": {"description": "Jenkins or Jira is not reachable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/v1/setup/team": {
+      "post": {
+        "summary": "While LDP Releaser waits for its settings: save the team file, from 1Password (`item`, optional `vault`) or from a file on this machine (`path`), then restart. Once it runs, answers 409",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "item": {"type": "string"},
+          "path": {"type": "string"},
+          "vault": {"type": "string"}
+        }}}}},
+        "responses": {"202": {"description": "Saved; LDP Releaser restarts"}, "400": {"$ref": "#/components/responses/badRequest"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}
       }
     }
   }
