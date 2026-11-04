@@ -24,6 +24,7 @@ DEFAULT_PORT = 8766
 # Dotted key -> kind. Every key is required unless listed in OPTIONAL_KEYS.
 
 PERSONAL_SCHEMA = {
+    "api.allowed_origins": "list",
     "asah.checkout": "path",
     "charts.checkout": "path",
     "jenkins.token": "secret",
@@ -102,7 +103,8 @@ TEAM_SCHEMA = {
 }
 
 OPTIONAL_KEYS = {
-    "argocd.applications", "argocd.image_name", "argocd.project", "argocd.tokens",
+    "api.allowed_origins", "argocd.applications", "argocd.image_name", "argocd.project",
+    "argocd.tokens",
     "asah.checkout", "asah.composer_directory", "asah.composer_script",
     "asah.dependency_file", "asah.main_branch", "jira.fix_security_level",
     "charts.merge.checks", "charts.merge.develop_method",
@@ -562,6 +564,8 @@ def write_personal(personal):
         for name, value in entries:
             if isinstance(value, int):
                 lines.append(f"{name} = {value}")
+            elif isinstance(value, list):
+                lines.append(f"{name} = [{', '.join(toml_string(str(item)) for item in value)}]")
             else:
                 lines.append(f"{name} = {toml_string(str(value))}")
 

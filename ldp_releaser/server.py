@@ -8,14 +8,16 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import composer, dataflow, failure, fixes, gcloud, health, release, team_update
+from . import api, composer, dataflow, failure, fixes, gcloud, health, release, team_update
 
 INDEX_FILE = Path(__file__).parent / "static" / "index.html"
+OPENAPI_FILE = Path(__file__).parent / "static" / "openapi.json"
 
 
 class Handler(BaseHTTPRequestHandler):
 
     account = None
+    cors_origin = None
     gcloud_login = gcloud.Login()
     jenkins = None
     jira = None
@@ -27,44 +29,78 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(403, {"error": "Forbidden host"})
 
         url = urllib.parse.urlparse(self.path)
+        path = url.path
+        query = urllib.parse.parse_qs(url.query)
 
-        if url.path == "/":
+        if path == "/":
             return self._send(200, INDEX_FILE.read_bytes(), "text/html; charset=utf-8")
 
-        if url.path == "/api/branches":
+        if self._is_api(path):
+            self._allow_origin()
+
+            if path == "/api/v1/openapi.json":
+                return self._send(200, OPENAPI_FILE.read_bytes(), "application/json")
+
+            if not api.authorized(self.headers.get("Authorization")):
+                return self._send_json(401, {"error": "Missing or wrong API token"})
+
+            path = "/api" + path[len("/api/v1"):]
+
+            if path == "/api":
+                return self._send_json(
+                    200,
+                    {"name": "LDP Releaser", "openapi": "/api/v1/openapi.json", "version": 1})
+
+            if path == "/api/attention":
+                with release.runs_lock:
+                    return self._send_json(
+                        200, api.attention(release.runs.values(), self.settings))
+
+            if path == "/api/runs":
+                return self._runs(query)
+
+            if path == "/api/status":
+                return self._status()
+
+            match = re.fullmatch(r"/api/runs/(\w+)", path)
+
+            if match:
+                return self._run(match.group(1))
+
+        if path == "/api/branches":
             return self._branches()
 
-        if url.path == "/api/config":
+        if path == "/api/config":
             return self._send_json(200, self._config())
 
-        if url.path == "/api/gcloud/login":
+        if path == "/api/gcloud/login":
             state = self.gcloud_login.state()
 
-            if "check" in urllib.parse.parse_qs(url.query):
+            if "check" in query:
                 state["problem"] = gcloud.login_problem()
 
             return self._send_json(200, state)
 
-        if url.path == "/api/health":
-            refresh = "refresh" in urllib.parse.parse_qs(url.query)
+        if path == "/api/health":
+            refresh = "refresh" in query
 
             return self._send_json(
                 200,
                 health.checks(self.jenkins, self.jira, self.settings, refresh))
 
-        if url.path == "/api/release-tickets":
+        if path == "/api/release-tickets":
             try:
                 return self._send_json(200, release.open_release_tickets(self.jira))
             except (OSError, RuntimeError, urllib.error.URLError) as exception:
                 return self._send_json(502, {"error": str(exception)})
 
-        if url.path == "/api/team-update":
-            if "check" in urllib.parse.parse_qs(url.query):
+        if path == "/api/team-update":
+            if "check" in query:
                 team_update.start_check(self.settings)
 
             return self._send_json(200, team_update.current(self.settings))
 
-        if url.path == "/api/runs":
+        if path == "/api/runs":
             with release.runs_lock:
                 body = json.dumps(
                     sorted(
@@ -75,34 +111,77 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send_json(404, {"error": "Not found"})
 
-    def do_POST(self):
+    def do_OPTIONS(self):
 
-        # Reject cross-site requests so another page in the browser cannot
-        # start a release through this server.
+        # The preflight of a browser page on another origin, which only the
+        # origins in api.allowed_origins pass.
 
-        content_type = self.headers.get("Content-Type", "")
-        origin = self.headers.get("Origin")
-
-        if (not self._is_local_host() or
-                not content_type.startswith("application/json") or
-                (origin and urllib.parse.urlparse(origin).netloc !=
-                 self.headers.get("Host"))):
+        if (not self._is_local_host() or not self._is_api(self.path) or
+                not self._allow_origin()):
 
             return self._send_json(403, {"error": "Forbidden"})
 
-        if self.path == "/api/runs":
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
+        self.send_header("Access-Control-Allow-Origin", self.cors_origin)
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Content-Length", "0")
+        self.send_header("Vary", "Origin")
+        self.end_headers()
+
+    def do_POST(self):
+        path = self.path
+
+        if not self._is_local_host():
+            return self._send_json(403, {"error": "Forbidden"})
+
+        if self._is_api(path):
+
+            # The token is what tells the API's callers apart from other
+            # pages in the browser, which cannot send it.
+
+            self._allow_origin()
+
+            if not api.authorized(self.headers.get("Authorization")):
+                return self._send_json(401, {"error": "Missing or wrong API token"})
+
+            path = "/api" + path[len("/api/v1"):]
+        else:
+
+            # Reject cross-site requests so another page in the browser cannot
+            # start a release through this server.
+
+            content_type = self.headers.get("Content-Type", "")
+            origin = self.headers.get("Origin")
+
+            if (not content_type.startswith("application/json") or
+                    (origin and urllib.parse.urlparse(origin).netloc !=
+                     self.headers.get("Host"))):
+
+                return self._send_json(403, {"error": "Forbidden"})
+
+        try:
+            self.body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            return self._send_json(400, {"error": "The body is not valid JSON"})
+
+        if not isinstance(self.body, dict):
+            return self._send_json(400, {"error": "The body must be a JSON object"})
+
+        if path == "/api/runs":
             return self._start_run()
 
-        if self.path == "/api/composer-runs":
+        if path == "/api/composer-runs":
             return self._start_composer_run()
 
-        if self.path == "/api/dataflow-runs":
+        if path == "/api/dataflow-runs":
             return self._start_dataflow_run()
 
-        if self.path == "/api/gcloud/login":
+        if path == "/api/gcloud/login":
             return self._send_json(202, self.gcloud_login.start())
 
-        if self.path == "/api/team-update":
+        if path == "/api/team-update":
             if not team_update.enabled(self.settings):
                 return self._send_json(
                     409, {"error": "No 1Password item for the team file in your settings"})
@@ -114,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._send_json(202, {"restarting": True})
 
-        if self.path == "/api/gcloud/login/code":
+        if path == "/api/gcloud/login/code":
             payload = self._payload()
 
             if not self.gcloud_login.send_code(str(payload.get("code", ""))):
@@ -122,19 +201,19 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._send_json(202, self.gcloud_login.state())
 
-        match = re.fullmatch(r"/api/runs/(\w+)/stages/([\w-]+)/failure", self.path)
+        match = re.fullmatch(r"/api/runs/(\w+)/stages/([\w-]+)/failure", path)
 
         if match:
             return self._explain_failure(match.group(1), match.group(2))
 
-        match = re.fullmatch(r"/api/runs/(\w+)/stages/asahBuild/fix", self.path)
+        match = re.fullmatch(r"/api/runs/(\w+)/stages/asahBuild/fix", path)
 
         if match:
             return self._fix(match.group(1))
 
         match = re.fullmatch(
             r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets|relaunch-dataflow)",
-            self.path)
+            path)
 
         if match:
             return self._run_action(match.group(1), match.group(2))
@@ -242,6 +321,17 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send_json(202, {"id": run_id})
 
+    def _allow_origin(self):
+        origin = self.headers.get("Origin")
+
+        if api.allowed_origin(self.settings, origin):
+            self.cors_origin = origin
+
+        return self.cors_origin is not None
+
+    def _is_api(self, path):
+        return path == "/api/v1" or path.startswith("/api/v1/")
+
     def _is_local_host(self):
         return self.headers.get("Host") in (
             f"127.0.0.1:{self.port}", f"localhost:{self.port}")
@@ -291,6 +381,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status, body, content_type):
         self.send_response(status)
+
+        if self.cors_origin:
+            self.send_header("Access-Control-Allow-Origin", self.cors_origin)
+            self.send_header("Vary", "Origin")
+
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Content-Type", content_type)
         self.end_headers()
@@ -300,9 +395,61 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload).encode(), "application/json")
 
     def _payload(self):
-        length = int(self.headers.get("Content-Length", 0))
+        return self.body
 
-        return json.loads(self.rfile.read(length) or b"{}")
+    def _run(self, run_id):
+        with release.runs_lock:
+            run = release.runs.get(run_id)
+
+            if run is None:
+                return self._send_json(404, {"error": "Run not found"})
+
+            body = json.dumps(
+                {**run, "actions": api.run_actions(run, self.settings),
+                 "kind": api.run_kind(run), "title": api.run_title(run)})
+
+        return self._send(200, body.encode(), "application/json")
+
+    def _runs(self, query):
+        kind = (query.get("kind") or [None])[0]
+        status = (query.get("status") or [None])[0]
+        limit = (query.get("limit") or [None])[0]
+
+        if limit is not None and (not limit.isdigit() or int(limit) < 1):
+            return self._send_json(400, {"error": "limit must be a positive number"})
+
+        with release.runs_lock:
+            runs = [
+                api.summary(run, self.settings)
+                for run in sorted(
+                    release.runs.values(), key=lambda run: run["createdAt"], reverse=True)
+                if (not kind or api.run_kind(run) == kind) and
+                (not status or run["status"] == status)
+            ]
+
+            if limit:
+                runs = runs[:int(limit)]
+
+            body = json.dumps(runs)
+
+        return self._send(200, body.encode(), "application/json")
+
+    def _status(self):
+        with release.runs_lock:
+            runs = sorted(release.runs.values(), key=lambda run: run["createdAt"], reverse=True)
+            latest = {}
+
+            for run in runs:
+                latest.setdefault(api.run_kind(run), api.summary(run, self.settings))
+
+            body = json.dumps({
+                "attention": len(api.attention(runs, self.settings)),
+                "latest": latest,
+                "running": sum(1 for run in runs if run["finishedAt"] is None),
+                "teamUpdate": team_update.current(self.settings)["status"],
+            })
+
+        return self._send(200, body.encode(), "application/json")
 
     def _start_composer_run(self):
         try:
@@ -373,6 +520,8 @@ def serve(account, jenkins, jira, settings, unfinished_runs):
     Handler.jira = jira
     Handler.port = settings["server.port"]
     Handler.settings = settings
+
+    api.api_token()
 
     for run in unfinished_runs:
         start_run(jenkins, jira, run)

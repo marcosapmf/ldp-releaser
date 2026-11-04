@@ -1,0 +1,231 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LDP Releaser API",
+    "version": "1",
+    "description": "Everything the LDP Releaser page shows and does, for other tools such as a dashboard. The server only answers on 127.0.0.1. Every call except this description needs `Authorization: Bearer <token>`, with the token from ~/.config/ldp-releaser/api-token. Browser pages on another origin also need that origin in `api.allowed_origins` of the personal settings. Actions do what the page's buttons do, without the page's confirmation dialogs, so ask the person before calling them."
+  },
+  "servers": [{"url": "http://127.0.0.1:8766"}],
+  "security": [{"token": []}],
+  "components": {
+    "securitySchemes": {
+      "token": {"type": "http", "scheme": "bearer"}
+    },
+    "parameters": {
+      "runId": {"in": "path", "name": "runId", "required": true, "schema": {"type": "string"}},
+      "stage": {"in": "path", "name": "stage", "required": true, "schema": {"type": "string"}, "description": "A key of the run's `stages`, in the order of `stageOrder`"}
+    },
+    "responses": {
+      "accepted": {"description": "Accepted", "content": {"application/json": {"schema": {"type": "object", "properties": {"id": {"type": "string"}}}}}},
+      "badRequest": {"description": "The request is invalid; `error` says why", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "conflict": {"description": "The run or server is not in a state that allows this; `error` says why", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "created": {"description": "The run started", "content": {"application/json": {"schema": {"type": "object", "properties": {"id": {"type": "string"}}}}}},
+      "notFound": {"description": "No such run or step", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "unauthorized": {"description": "Missing or wrong token", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "Action": {
+        "type": "object",
+        "description": "A call that answers or acts on a run, as the page's buttons do",
+        "properties": {
+          "body": {"type": ["object", "null"]},
+          "kind": {"type": "string", "enum": ["apply-fixes", "cancel", "close-tickets", "confirm-rollout", "explain-failure", "gcloud-login", "keep-tickets", "relaunch-dataflow", "team-update"]},
+          "label": {"type": "string"},
+          "method": {"type": "string", "enum": ["POST"]},
+          "path": {"type": "string"},
+          "stage": {"type": ["string", "null"]}
+        }
+      },
+      "AttentionItem": {
+        "type": "object",
+        "description": "Something waiting for a person",
+        "properties": {
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/Action"}},
+          "kind": {"type": "string", "enum": ["close-tickets", "confirm-rollout", "gcloud-login", "relaunch-dataflow", "team-update"]},
+          "links": {"type": "array", "items": {"$ref": "#/components/schemas/Link"}},
+          "runId": {"type": ["string", "null"]},
+          "runTitle": {"type": ["string", "null"]},
+          "since": {"type": ["number", "null"], "description": "Unix time"},
+          "stage": {"type": ["string", "null"]},
+          "why": {"type": ["string", "null"]}
+        }
+      },
+      "Error": {"type": "object", "properties": {"error": {"type": "string"}}},
+      "Link": {"type": "object", "properties": {"label": {"type": "string"}, "url": {"type": "string"}}},
+      "Run": {
+        "type": "object",
+        "description": "A run as saved. Release runs have more fields (tickets, pull requests, images); Composer and Dataflow runs have `environments`, `ref` and `commit`. Times are Unix times.",
+        "properties": {
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/Action"}},
+          "createdAt": {"type": "number"},
+          "error": {"type": ["string", "null"]},
+          "finishedAt": {"type": ["number", "null"]},
+          "id": {"type": "string"},
+          "kind": {"type": "string", "enum": ["composer", "dataflow", "release"]},
+          "mode": {"type": "string", "enum": ["asah", "faro", "release"], "description": "Release runs only: the tab it was started from"},
+          "stageLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+          "stageOrder": {"type": "array", "items": {"type": "string"}},
+          "stages": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Stage"}},
+          "status": {"type": "string", "enum": ["aborted", "failed", "running", "success"]},
+          "title": {"type": "string"}
+        }
+      },
+      "Stage": {
+        "type": "object",
+        "properties": {
+          "failure": {"type": "object", "description": "Only in a single run, once its failure was explained"},
+          "finishedAt": {"type": ["number", "null"]},
+          "links": {"type": "array", "items": {"$ref": "#/components/schemas/Link"}},
+          "log": {"type": "string", "description": "The end of the step's log; only in a single run"},
+          "needsGcloudLogin": {"type": "boolean"},
+          "startedAt": {"type": ["number", "null"]},
+          "status": {"type": "string", "enum": ["aborted", "failed", "pending", "queued", "running", "skipped", "success"]},
+          "url": {"type": ["string", "null"], "description": "The Jenkins build, when the step is one"},
+          "why": {"type": ["string", "null"], "description": "What the step is waiting for"}
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1": {
+      "get": {"summary": "Name, version and where this description is", "responses": {"200": {"description": "OK"}, "401": {"$ref": "#/components/responses/unauthorized"}}}
+    },
+    "/api/v1/openapi.json": {
+      "get": {"summary": "This description", "security": [], "responses": {"200": {"description": "OK"}}}
+    },
+    "/api/v1/status": {
+      "get": {
+        "summary": "Counts for a dashboard tile: running runs, things waiting for a person, the team settings update",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "attention": {"type": "integer"},
+          "latest": {"type": "object", "description": "The latest run of each kind", "additionalProperties": {"$ref": "#/components/schemas/Run"}},
+          "running": {"type": "integer"},
+          "teamUpdate": {"type": "string"}
+        }}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/attention": {
+      "get": {
+        "summary": "Everything waiting for a person, with the calls that answer it",
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/AttentionItem"}}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/config": {
+      "get": {"summary": "What the forms offer: environments, gcloud configurations, Dataflow templates, and whether Composer, Dataflow and fixes are set up", "responses": {"200": {"description": "OK"}, "401": {"$ref": "#/components/responses/unauthorized"}}}
+    },
+    "/api/v1/health": {
+      "get": {
+        "summary": "The setup checks (Jenkins, Jira, GitHub, charts clone, gcloud, ...); cached for a minute",
+        "parameters": [{"in": "query", "name": "refresh", "schema": {"type": "string"}, "description": "Any value checks again now"}],
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"type": "object", "properties": {
+          "name": {"type": "string"}, "ok": {"type": "boolean"}, "problem": {"type": ["string", "null"]}, "required": {"type": "boolean"}
+        }}}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/branches": {
+      "get": {"summary": "Recently built Asah and Faro branches", "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {"asah": {"type": "array", "items": {"type": "string"}}, "faro": {"type": "array", "items": {"type": "string"}}}}}}}, "401": {"$ref": "#/components/responses/unauthorized"}, "502": {"description": "Jenkins is not reachable"}}}
+    },
+    "/api/v1/release-tickets": {
+      "get": {"summary": "Open release tickets of the team, which a new release can reuse", "responses": {"200": {"description": "OK"}, "401": {"$ref": "#/components/responses/unauthorized"}, "502": {"description": "Jira is not reachable"}}}
+    },
+    "/api/v1/runs": {
+      "get": {
+        "summary": "Runs, newest first, without their logs",
+        "parameters": [
+          {"in": "query", "name": "kind", "schema": {"type": "string", "enum": ["composer", "dataflow", "release"]}},
+          {"in": "query", "name": "status", "schema": {"type": "string", "enum": ["aborted", "failed", "running", "success"]}},
+          {"in": "query", "name": "limit", "schema": {"type": "integer", "minimum": 1}}
+        ],
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Run"}}}}}, "400": {"$ref": "#/components/responses/badRequest"}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      },
+      "post": {
+        "summary": "Start a release, as the Release, Asah and Faro tabs do",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "asahBranch": {"type": "string", "description": "Asah branch to build; empty skips the build"},
+          "composer": {"type": "boolean", "description": "Upload the Composer DAGs after the rollout"},
+          "dataflow": {"type": "array", "items": {"type": "string"}, "description": "Dataflow templates to deploy after the Composer DAGs"},
+          "faroBranch": {"type": "string"},
+          "faroEnvironments": {"type": "array", "items": {"type": "string"}},
+          "mode": {"type": "string", "enum": ["asah", "faro", "release"], "default": "release"},
+          "releaseEnvironments": {"type": "array", "items": {"type": "string"}},
+          "tagSuffix": {"type": "string", "description": "Only when no Asah branch is built"},
+          "tickets": {"type": "object", "description": "Needed when open release tickets exist", "properties": {"action": {"type": "string", "enum": ["new", "reuse"]}, "key": {"type": "string", "description": "The ticket to reuse"}}},
+          "version": {"type": "string", "description": "Version for the GitHub tags of a PRD release"}
+        }}}}},
+        "responses": {"201": {"$ref": "#/components/responses/created"}, "400": {"$ref": "#/components/responses/badRequest"}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/runs/{runId}": {
+      "get": {"summary": "One run with its logs and actions", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Run"}}}}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}}}
+    },
+    "/api/v1/runs/{runId}/cancel": {
+      "post": {"summary": "Cancel a run", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}}}
+    },
+    "/api/v1/runs/{runId}/confirm-rollout": {
+      "post": {"summary": "Confirm the rollout of a run waiting for it", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    },
+    "/api/v1/runs/{runId}/close-tickets": {
+      "post": {"summary": "Close the Jira tickets of a run that is not a PRD release", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    },
+    "/api/v1/runs/{runId}/keep-tickets": {
+      "post": {"summary": "Keep the Jira tickets of a run open", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    },
+    "/api/v1/runs/{runId}/relaunch-dataflow": {
+      "post": {"summary": "Drain the streaming job whose update Dataflow refused, and launch it again from the new template; ingestion stops for a few minutes", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    },
+    "/api/v1/runs/{runId}/stages/{stage}/failure": {
+      "post": {"summary": "Read the log of a failed Jenkins build and explain the failure; saved on the stage as `failure`", "parameters": [{"$ref": "#/components/parameters/runId"}, {"$ref": "#/components/parameters/stage"}], "responses": {"200": {"description": "The explanation"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}, "502": {"description": "Jenkins is not reachable"}}}
+    },
+    "/api/v1/runs/{runId}/stages/asahBuild/fix": {
+      "post": {"summary": "Apply the fixes planned for a failed Asah build: a private Jira subtask, one commit per fix and the pull requests", "parameters": [{"$ref": "#/components/parameters/runId"}], "responses": {"202": {"$ref": "#/components/responses/accepted"}, "401": {"$ref": "#/components/responses/unauthorized"}, "404": {"$ref": "#/components/responses/notFound"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    },
+    "/api/v1/composer-runs": {
+      "post": {
+        "summary": "Upload the Composer DAGs of an Asah version",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["environments", "ref"], "properties": {
+          "environments": {"type": "array", "items": {"type": "string"}},
+          "ref": {"type": "string", "description": "Asah branch, tag or commit"}
+        }}}}},
+        "responses": {"201": {"$ref": "#/components/responses/created"}, "400": {"$ref": "#/components/responses/badRequest"}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/dataflow-runs": {
+      "post": {
+        "summary": "Deploy the Dataflow templates of an Asah version and update the running streaming jobs",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["environments", "ref", "templates"], "properties": {
+          "environments": {"type": "array", "items": {"type": "string"}},
+          "ref": {"type": "string", "description": "Asah branch, tag or commit"},
+          "templates": {"type": "array", "items": {"type": "string"}}
+        }}}}},
+        "responses": {"201": {"$ref": "#/components/responses/created"}, "400": {"$ref": "#/components/responses/badRequest"}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      }
+    },
+    "/api/v1/gcloud/login": {
+      "get": {
+        "summary": "The state of the gcloud login started from here",
+        "parameters": [{"in": "query", "name": "check", "schema": {"type": "string"}, "description": "Any value also checks whether the current login works, as `problem`"}],
+        "responses": {"200": {"description": "OK"}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      },
+      "post": {"summary": "Start `gcloud auth login`, which opens the sign-in page in the browser of this machine", "responses": {"202": {"description": "The login state"}, "401": {"$ref": "#/components/responses/unauthorized"}}}
+    },
+    "/api/v1/gcloud/login/code": {
+      "post": {
+        "summary": "Send the verification code a gcloud login asks for",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string"}}}}}},
+        "responses": {"202": {"description": "The login state"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}
+      }
+    },
+    "/api/v1/team-update": {
+      "get": {
+        "summary": "Whether 1Password has another version of the team settings; `changes` lists setting names only",
+        "parameters": [{"in": "query", "name": "check", "schema": {"type": "string"}, "description": "Any value checks 1Password in the background, at most once an hour"}],
+        "responses": {"200": {"description": "OK", "content": {"application/json": {"schema": {"type": "object", "properties": {
+          "changes": {"type": "array", "items": {"type": "string"}},
+          "problems": {"type": "array", "items": {"type": "string"}},
+          "status": {"type": "string", "enum": ["available", "checking", "current", "invalid", "local-newer", "off", "unavailable", "unknown"]}
+        }}}}}, "401": {"$ref": "#/components/responses/unauthorized"}}
+      },
+      "post": {"summary": "Replace the team settings with the version in 1Password and restart; unfinished runs resume", "responses": {"202": {"description": "Restarting"}, "401": {"$ref": "#/components/responses/unauthorized"}, "409": {"$ref": "#/components/responses/conflict"}}}
+    }
+  }
+}

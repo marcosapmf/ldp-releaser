@@ -235,9 +235,49 @@ The page has a setup panel that checks Jenkins, Jira, GitHub, the charts
 clone, git, Python and Slack, and keeps **Run** disabled while something
 required is broken.
 
+## API
+
+Other tools, such as a dashboard, get everything the page shows and does
+under `/api/v1`: runs and their steps, what waits for a person, the setup
+checks, the forms' options, and the actions (start a release, a Composer or
+Dataflow run, confirm a rollout, close or keep the tickets, drain and
+relaunch, explain a failure, apply fixes, log in to gcloud, update the team
+settings). `GET /api/v1/openapi.json` describes every call.
+
+Each call needs the token that the first start writes to
+`~/.config/ldp-releaser/api-token` (readable only by you):
+
+```sh
+curl -H "Authorization: Bearer $(cat ~/.config/ldp-releaser/api-token)" \
+  http://127.0.0.1:8766/api/v1/attention
+```
+
+- `GET /api/v1/status` gives counts for a dashboard tile and the latest run
+  of each kind.
+- `GET /api/v1/attention` lists what waits for a person (a rollout to
+  confirm, tickets to close, a Dataflow job to relaunch, a gcloud login, a
+  team settings update), each with the calls that answer it.
+- `GET /api/v1/runs` lists runs without their logs; filter with `kind`,
+  `status` and `limit`. `GET /api/v1/runs/<id>` has the logs, and every run
+  lists its `actions`.
+
+The actions skip the page's confirmation dialogs, so a dashboard should ask
+before calling them. The API only answers on `127.0.0.1`, like the page. A
+browser page served from another origin also needs that origin in your
+personal settings:
+
+```toml
+[api]
+allowed_origins = ["http://localhost:5173"]
+```
+
+Delete the token file and restart to get a new token.
+
 ## Security
 
 - The page only answers on `127.0.0.1` and rejects requests from other sites.
+  The API needs its token, and only the origins you list may call it from a
+  browser.
 - Settings files are created with `600` permissions.
 - `scripts/check_leaks.py` (run by the pre-commit hook and the tests) fails
   when a file contains a token, a Slack webhook, an internal host name or any
