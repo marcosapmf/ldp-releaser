@@ -20,6 +20,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from . import gcloud
+
 LOG_TAIL_CHARS = 60_000
 ARGOCD_POLL_SECONDS = float(os.environ.get("LDP_ARGOCD_POLL_SECONDS", "30"))
 MERGE_POLL_SECONDS = float(os.environ.get("LDP_MERGE_POLL_SECONDS", "60"))
@@ -584,6 +586,8 @@ def execute(jenkins, jira, run):
     ]
 
     try:
+        activate_release_configuration(run)
+
         result = "SUCCESS"
 
         for stage_name, enabled, action in steps:
@@ -605,6 +609,33 @@ def execute(jenkins, jira, run):
         update_run(run, error=str(exception), status="failed")
     finally:
         finish(run)
+
+
+def activate_release_configuration(run):
+
+    # Starting a release makes the first gcloud configuration of its
+    # environments the active one, so gcloud commands run by hand during the
+    # release reach the environment being released. A run resumed after a
+    # restart keeps whatever is active by then.
+
+    if run.get("gcloudConfiguration") or run.get("gcloudProblem"):
+        return
+
+    names = [
+        name for environment in settings.environments()
+        if environment in run["releaseEnvironments"]
+        for name in (settings["gcloud.environments"] or {}).get(environment, [])
+    ]
+
+    if not names:
+        return
+
+    problem = gcloud.activate(names[0])
+
+    if problem:
+        update_run(run, gcloudProblem=f"Could not activate gcloud configuration {names[0]}: {problem}")
+    else:
+        update_run(run, gcloudConfiguration=names[0])
 
 
 def build_asah(jenkins, run):

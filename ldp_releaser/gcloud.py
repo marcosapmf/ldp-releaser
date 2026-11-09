@@ -2,7 +2,9 @@
 
 The team file maps configuration names to projects, regions and zones; each
 person's own gcloud login is used as the account. Existing configurations
-are never changed, and the active configuration is never switched.
+are never changed. A release switches the active configuration to the
+environment it is releasing to, so gcloud commands run by hand meanwhile
+reach that environment.
 """
 
 import json
@@ -98,6 +100,21 @@ class Login:
 
 def idle_state():
     return {"needsCode": False, "output": "", "startedAt": None, "status": "idle", "url": None}
+
+
+def activate(name):
+
+    # Returns why the configuration could not be activated, or None.
+
+    if not shutil.which("gcloud"):
+        return "gcloud is not installed"
+
+    completed = run(["gcloud", "config", "configurations", "activate", name])
+
+    if completed.returncode:
+        return completed.stderr.strip()[:200] or f"exit code {completed.returncode}"
+
+    return None
 
 
 def active_account():

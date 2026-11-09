@@ -136,6 +136,12 @@ class ReleaseTest(AppTestCase):
         self.assertEqual("success", run["status"], run["error"])
         self.assertEqual("20260101-abcd001", run["tagSuffix"])
 
+        # The first released environment's gcloud configuration is active.
+
+        self.assertEqual("team-stg", run["gcloudConfiguration"])
+        self.assertEqual(
+            "team-stg", json.loads((self.temp / "gcloud.json").read_text())["active"])
+
         task = self.fakes.issues[run["jiraTask"]]
         technical_task = self.fakes.issues[run["jiraTechnicalTask"]]
 

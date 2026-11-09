@@ -1163,6 +1163,12 @@ function renderRun(run) {
     images += `<div class="image">Asah tag suffix: ${escapeHtml(run.tagSuffix)}</div>`;
   }
 
+  if (run.gcloudConfiguration) {
+    images += `<div class="image">Active gcloud configuration: ${escapeHtml(run.gcloudConfiguration)}</div>`;
+  } else if (run.gcloudProblem) {
+    images += `<div class="image">${escapeHtml(run.gcloudProblem)}</div>`;
+  }
+
   const faroImages = run.faroImages || {};
 
   if (run.faroImage) {
@@ -1554,6 +1560,10 @@ document.getElementById("form").addEventListener("submit", async event => {
   }
 
   if (releaseEnvironments.length) {
+    if (composerConfigurations(releaseEnvironments).length) {
+      steps.push(`• Activate the gcloud configuration ${composerConfigurations(releaseEnvironments)[0]}${composer || dataflow.length ? ", then each one as its Composer DAGs or Dataflow templates are deployed" : ""}`);
+    }
+
     steps.push(`• Create Jira tickets "${releaseSummary(releaseEnvironments)}" and open a charts PR setting the tag suffix to ${asahBranch ? "the new build's suffix" : tagSuffix}, then wait for its merge`);
 
     if (needsProduction(releaseEnvironments)) {

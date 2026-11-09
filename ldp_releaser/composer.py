@@ -143,6 +143,8 @@ def execute(run):
             if release.stage_done(run, stage_name):
                 continue
 
+            activate_configuration(run, stage_name, name)
+
             result = release.run_local_stage(
                 run, stage_name, lambda: upload(run, stage_name, name, worktree))
 
@@ -199,6 +201,8 @@ def release_step(run):
                 continue
 
             release.append_log(run, "composer", f"== {name}\n")
+
+            activate_configuration(run, "composer", name)
 
             if upload(run, "composer", name, worktree) == "ABORTED":
                 return "ABORTED"
@@ -352,6 +356,20 @@ def validate(payload):
                 raise ValueError(f"gcloud configuration {name} has no region in the team settings")
 
     return [environment for environment in available if environment in environments], ref
+
+
+def activate_configuration(run, stage_name, name):
+
+    # The active gcloud configuration follows the deploy, for gcloud commands
+    # run by hand meanwhile. The steps set their project themselves, so a
+    # failure is only logged.
+
+    problem = gcloud.activate(name)
+
+    if problem:
+        release.append_log(run, stage_name, f"Could not activate gcloud configuration {name}: {problem}\n")
+    else:
+        release.update_run(run, gcloudConfiguration=name)
 
 
 def wait_for_login(run, stage_name):

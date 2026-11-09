@@ -189,6 +189,14 @@ def main():
 
         if "--no-activate" not in arguments:
             state["active"] = arguments[3]
+    elif arguments[:3] == ["config", "configurations", "activate"]:
+        if arguments[3] not in state["configurations"]:
+            print(f"ERROR: Cannot activate configuration [{arguments[3]}], it does not exist.", file=sys.stderr)
+
+            code = 1
+        else:
+            state["active"] = arguments[3]
+            state.setdefault("activations", []).append(arguments[3])
     elif arguments[:3] == ["config", "configurations", "delete"]:
         for name in arguments[3:]:
             if not name.startswith("--"):

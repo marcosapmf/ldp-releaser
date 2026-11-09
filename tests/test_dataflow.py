@@ -117,6 +117,12 @@ class DataflowTest(DataflowTestCase):
              for value in set(self.job_states().values())})
         self.assertNotIn("drains", state)
 
+        # The active configuration followed the deploy.
+
+        self.assertEqual(["team-stg", "team-prd-1", "team-prd-2"], state["activations"])
+        self.assertEqual("team-prd-2", state["active"])
+        self.assertEqual("team-prd-2", run["gcloudConfiguration"])
+
         # The personal clone keeps its branch and its uncommitted work, and
         # has no leftover worktree.
 

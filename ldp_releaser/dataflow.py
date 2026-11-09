@@ -213,6 +213,8 @@ def execute(run):
             if release.stage_done(run, stage_name):
                 continue
 
+            composer.activate_configuration(run, stage_name, name)
+
             result = release.run_local_stage(
                 run, stage_name, lambda: deploy(run, stage_name, name, worktree))
 
@@ -367,6 +369,8 @@ def release_step(run):
             return "ABORTED"
 
         for name in configurations_for(run["releaseEnvironments"]):
+            composer.activate_configuration(run, "dataflow", name)
+
             if deploy(run, "dataflow", name, worktree) == "ABORTED":
                 return "ABORTED"
     finally:
