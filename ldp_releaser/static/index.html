@@ -166,6 +166,15 @@ h2 { font-size: 16px; margin: 32px 0 12px; }
 .ticket-choices { display: grid; gap: 6px; }
 .ticket-choices label { align-items: baseline; display: flex; font-weight: 400; gap: 8px; margin: 0; }
 .stages { display: grid; gap: 10px; margin-top: 14px; }
+.tree { display: grid; gap: 12px; margin-top: 14px; }
+.tree-group { border-left: 3px solid var(--border); padding-left: 12px; }
+.tree-group .stages { margin-top: 6px; }
+.tree-group.g-success { border-left-color: var(--ok); }
+.tree-group.g-running { border-left-color: var(--run); }
+.tree-group.g-waiting { border-left-color: var(--warn); }
+.tree-group.g-failed { border-left-color: var(--fail); }
+.tree-head { align-items: center; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.tree-title { font-weight: 600; }
 .stage { border-top: 1px solid var(--border); padding-top: 10px; }
 .stage.s-skipped { opacity: .55; }
 .stage-head[data-expand-steps] { cursor: pointer; }
@@ -220,7 +229,7 @@ pre {
 <body>
 <main>
   <h1>LDP Releaser</h1>
-  <p class="subtitle">Builds and releases Asah, then builds and deploys Faro. Leave a section empty to skip it. When Asah is released, Faro starts only after the charts PRs are merged.</p>
+  <p class="subtitle">Builds and releases Asah and builds and deploys Faro. Leave a section empty to skip it. Once the Asah build is done, the charts and the Faro builds run side by side, and each environment goes on as soon as its own rollout is confirmed.</p>
 
   <nav class="tabs" role="tablist">
     <button aria-selected="true" class="tab" data-tab="release" role="tab" type="button">Release</button>
@@ -284,6 +293,14 @@ pre {
           <label for="tag-suffix">Tag suffix</label>
           <input id="tag-suffix" autocomplete="off" placeholder="e.g. 20260101-abc1234" type="text">
           <div class="hint">Only used when no Asah branch is built; otherwise the suffix comes from the build's images.</div>
+        </div>
+      </fieldset>
+
+      <fieldset id="reuse-builds-field">
+        <legend>Builds</legend>
+        <div>
+          <label class="check"><input id="build-again" type="checkbox">Build again even if the branch has not changed</label>
+          <div class="hint">Unticked, a build already made of the branch's current head is deployed instead of building the same commit again, so every environment gets the same images.</div>
         </div>
       </fieldset>
 
@@ -584,6 +601,7 @@ function formValues() {
     faroEnvironments: selectedFaroEnvironments(),
     faroBranch: faroBranchInput.value.trim(),
     releaseEnvironments: selectedReleaseEnvironments(),
+    reuseBuilds: !document.getElementById("build-again").checked,
     tagSuffix: tagSuffixInput.value.trim()
   };
 
@@ -846,14 +864,27 @@ function faroPlan(faroEnvironments) {
     return "Pick one or more environments.";
   }
 
-  const steps = faroEnvironments.map(
-    environment => `build for <code>${escapeHtml(appConfig.faroBuildEnvironments[environment])}</code> and deploy to <code>${escapeHtml(environment)}</code>`);
+  // Environments with the same build target share one build.
+
+  const built = new Set();
+  const steps = faroEnvironments.map(environment => {
+    const target = appConfig.faroBuildEnvironments[environment];
+    const deploy = `deploy to <code>${escapeHtml(environment)}</code>`;
+
+    if (built.has(target)) {
+      return `${deploy} (same build)`;
+    }
+
+    built.add(target);
+
+    return `build for <code>${escapeHtml(target)}</code> and ${deploy}`;
+  });
 
   if (steps.length === 1) {
     return `${steps[0][0].toUpperCase()}${steps[0].slice(1)}.`;
   }
 
-  return `One environment at a time: ${steps.join(", then ")}. The next build starts after the previous deploy finishes.`;
+  return `One environment at a time: ${steps.join(", then ")}. Environments with the same build target deploy the same image; the next build starts after the previous deploy finishes.`;
 }
 
 function needsProduction(releaseEnvironments) {
@@ -920,7 +951,67 @@ function stageRan(stage) {
   return stage.status === "success" || (stage.status === "skipped" && Boolean(stage.log));
 }
 
+// A tree run: the shared steps, a group per environment that goes on once its
+// own rollout is confirmed, then the steps that need every environment.
+// Collapsed, each group shows only what is running, waiting or failed.
+
+function laneState(run, names) {
+  const statuses = names.map(name => run.stages[name].status);
+
+  if (statuses.includes("failed")) {
+    return ["failed", "Failed"];
+  }
+
+  if (names.some(name => name.startsWith("rollout-") && run.stages[name].status === "running" && !(run.rolloutsConfirmed || {})[name.slice(8)])) {
+    return ["waiting", "Waiting for you"];
+  }
+
+  if (statuses.some(status => status === "running" || status === "queued")) {
+    return ["running", "Running"];
+  }
+
+  if (statuses.every(status => status === "success" || status === "skipped")) {
+    return ["success", "Released"];
+  }
+
+  return ["pending", "Not started"];
+}
+
+function renderTree(run) {
+  const expanded = expandedRuns.has(run.id);
+  const shown = names => (expanded ? names : names.filter(name => ["queued", "running", "failed", "aborted"].includes(run.stages[name].status)));
+  const group = (title, names, lane) => {
+    const visible = shown(names);
+    let [status, label] = laneState(run, names);
+
+    if (!lane && status === "success") {
+      label = "Done";
+    }
+
+    return `<div class="tree-group g-${status}">
+      <div class="tree-head"><span class="tree-title">${escapeHtml(title)}</span><span class="badge s-${status === "waiting" ? "running" : status}">${label}</span></div>
+      ${visible.length ? `<div class="stages">${visible.map(name => renderStage(run, name)).join("")}</div>` : ""}
+    </div>`;
+  };
+  const shared = [...run.trunk, ...Object.values(run.tracks).flat()].filter(name => run.stages[name]);
+  const lanes = Object.entries(run.lanes);
+
+  return `<div class="steps-bar">
+      <span>${lanes.map(([environment, names]) => `${environment.toUpperCase()}: ${laneState(run, names)[1].toLowerCase()}`).join(" · ") || "No environments"}</span>
+      <button class="link-button" data-expand-steps="${run.id}" type="button">${expanded ? "Show only what is running" : "Show all steps"}</button>
+    </div>
+    <div class="tree">
+      ${group("Shared · the charts and the Faro builds run side by side", shared)}
+      ${lanes.map(([environment, names]) => group(environment.toUpperCase(), names, true)).join("")}
+      ${group("After every environment", run.join.filter(name => run.stages[name]))}
+    </div>`;
+}
+
 function renderStages(run) {
+  if (run.layout === "tree") {
+    return renderTree(run);
+  }
+
   const current = currentStageName(run);
   const planned = stageNames(run).filter(
     name => run.stages[name].status !== "skipped" || stageRan(run.stages[name]) || name === current);
@@ -964,8 +1055,13 @@ function renderStage(run, name) {
 
   let action = "";
 
-  if (name === "rollout" && stage.status === "running" && !run.rolloutConfirmed) {
-    action = `<div style="margin-top:8px"><button data-confirm-rollout="${run.id}" type="button">Confirm rollout</button></div>`;
+  // One rollout per environment, or one for all in runs saved before.
+
+  const rolloutEnvironment = name.startsWith("rollout-") ? name.slice("rollout-".length) : null;
+  const rolloutWaiting = name === "rollout" ? !run.rolloutConfirmed : rolloutEnvironment && !(run.rolloutsConfirmed || {})[rolloutEnvironment];
+
+  if (rolloutWaiting && stage.status === "running") {
+    action = `<div style="margin-top:8px"><button data-confirm-rollout="${run.id}" type="button">Confirm rollout${rolloutEnvironment ? ` (${escapeHtml(rolloutEnvironment.toUpperCase())})` : ""}</button></div>`;
   }
 
   if (name === "closeTickets" && stage.status === "running" && !run.prdRelease && !run.ticketsDecision) {
@@ -1124,11 +1220,28 @@ function renderFailure(run, name, stage) {
   return `<div class="failure">${parts.join("")}</div>`;
 }
 
+// Steps that change Jira or GitHub, so resuming one that stopped part way
+// could repeat what it already did.
+
+const RESUME_OUTSIDE = {
+  closeTickets: "closes Jira tickets",
+  developPullRequest: "opens a charts pull request",
+  jira: "creates or moves Jira tickets",
+  productionPullRequest: "opens a charts pull request",
+  tags: "creates GitHub tags"
+};
+
 function renderRun(run) {
   let cancel = "";
 
   if (run.status === "running" && !run.cancelRequested) {
     cancel = `<button class="secondary" data-cancel="${run.id}" type="button">Cancel</button>`;
+  }
+
+  // An ended release starts again from the step that ended it.
+
+  if (run.finishedAt && ["aborted", "failed"].includes(run.status) && !["composer", "dataflow"].includes(run.kind)) {
+    cancel = `<button data-resume="${run.id}" type="button">Resume</button>`;
   }
 
   let images = "";
@@ -1508,6 +1621,36 @@ runsContainer.addEventListener("click", async event => {
     return;
   }
 
+  const resumeId = event.target.dataset.resume;
+
+  if (resumeId) {
+    const run = runsById[resumeId];
+    const retried = Object.keys(run.stages).filter(name => ["aborted", "failed"].includes(run.stages[name].status));
+    const outside = retried.filter(name => RESUME_OUTSIDE[name]);
+    const lines = [
+      `Resume this run? It starts again from: ${retried.map(name => stageLabel(run, name)).join(", ") || "the steps that did not run"}.`,
+      "Every step that succeeded is kept and not repeated: no new builds of what was built."
+    ];
+
+    for (const name of outside) {
+      lines.push(`Careful: ${stageLabel(run, name)} ${RESUME_OUTSIDE[name]} and stopped part way; check what it already did before resuming.`);
+    }
+
+    if (!confirm(lines.join("\n\n"))) {
+      return;
+    }
+
+    const response = await fetch(`/api/runs/${resumeId}/resume`, {headers: {"Content-Type": "application/json"}, method: "POST"});
+
+    if (!response.ok) {
+      alert((await response.json()).error);
+    }
+
+    refreshRuns();
+
+    return;
+  }
+
   const id = event.target.dataset.cancel;
 
   if (!id || !confirm("Cancel this run? The current step is stopped and the remaining steps are skipped.")) {
@@ -1556,7 +1699,7 @@ document.getElementById("form").addEventListener("submit", async event => {
   }
 
   if (asahBranch) {
-    steps.push(`• Build Asah ${asahBranch}`);
+    steps.push(`• Build Asah ${asahBranch}${document.getElementById("build-again").checked ? "" : " (or reuse the build of its head)"}; then the charts and the Faro builds run side by side`);
   }
 
   if (releaseEnvironments.length) {
@@ -1570,7 +1713,12 @@ document.getElementById("form").addEventListener("submit", async event => {
       steps.push(`• Cherry-pick the merged commit into a charts PR to ${appConfig.productionBranch}, then wait for its merge`);
     }
 
-    steps.push("• Wait for you to confirm the rollout in Argo CD");
+    if (releaseEnvironments.length > 1) {
+      steps.push(`• Confirm each environment's rollout in Argo CD (${releaseEnvironments.map(environment => environment.toUpperCase()).join(", ")}); each one goes on by itself once confirmed: its Composer DAGs, Dataflow and Faro deploy`);
+    }
+    else {
+      steps.push("• Wait for you to confirm the rollout in Argo CD");
+    }
 
     if (composer) {
       steps.push(`• Upload the Composer DAGs of the released commit to ${composerConfigurations(releaseEnvironments).join(", ")}`);
@@ -1586,8 +1734,18 @@ document.getElementById("form").addEventListener("submit", async event => {
   }
 
   if (faroBranch) {
+    const built = new Set();
+
     for (const environment of faroEnvironments) {
-      steps.push(`• Build Faro ${faroBranch} for ${appConfig.faroBuildEnvironments[environment]} and deploy it to ${environment}`);
+      const target = appConfig.faroBuildEnvironments[environment];
+
+      if (built.has(target)) {
+        steps.push(`• Deploy the same Faro ${target} build to ${environment}`);
+      }
+      else {
+        built.add(target);
+        steps.push(`• Build Faro ${faroBranch} for ${target}${document.getElementById("build-again").checked ? "" : " (or reuse the build of its head)"} and deploy it to ${environment}`);
+      }
     }
   }
 

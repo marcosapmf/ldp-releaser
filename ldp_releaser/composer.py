@@ -174,14 +174,17 @@ def matching_remote(clone, repository):
     return None
 
 
-def release_step(run):
+def release_step(run, stage_name="composer", environments=None):
 
     # The Composer DAGs as part of a release, once the rollout is confirmed:
     # the login, the commit that was released, then every configuration of
-    # the released environments. After a restart, configurations already
-    # done are skipped.
+    # the released environments (or of one environment's branch). After a
+    # restart, configurations already done are skipped.
 
-    if wait_for_login(run, "composer") == "ABORTED":
+    if environments is None:
+        environments = run["releaseEnvironments"]
+
+    if wait_for_login(run, stage_name) == "ABORTED":
         return "ABORTED"
 
     ref = run["asahCommit"]
@@ -192,19 +195,19 @@ def release_step(run):
     worktree = Path(tempfile.mkdtemp(prefix="ldp-releaser-composer-")) / "asah"
 
     try:
-        commit = checkout(run, "composer", ref, worktree)
+        commit = checkout(run, stage_name, ref, worktree)
 
         release.update_run(run, composerCommit=commit)
 
-        for name in configurations_for(run["releaseEnvironments"]):
+        for name in configurations_for(environments):
             if name in run["composerDone"]:
                 continue
 
-            release.append_log(run, "composer", f"== {name}\n")
+            release.append_log(run, stage_name, f"== {name}\n")
 
-            activate_configuration(run, "composer", name)
+            activate_configuration(run, stage_name, name)
 
-            if upload(run, "composer", name, worktree) == "ABORTED":
+            if upload(run, stage_name, name, worktree) == "ABORTED":
                 return "ABORTED"
 
             release.update_run(run, composerDone=[*run["composerDone"], name])
@@ -383,7 +386,7 @@ def wait_for_login(run, stage_name):
         why=f"{problem[0].upper()}{problem[1:]}. Use the Log in to gcloud button.")
 
     while gcloud.login_problem():
-        if release.sleep_unless_cancelled(run, LOGIN_POLL_SECONDS):
+        if release.sleep_unless_cancelled(run, LOGIN_POLL_SECONDS, halt=True):
             release.update_stage(run, stage_name, needsGcloudLogin=False)
 
             return "ABORTED"

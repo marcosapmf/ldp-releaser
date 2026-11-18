@@ -39,9 +39,10 @@ def load():
         except (OSError, ValueError):
             continue
 
-        # Runs saved before a step existed get it, skipped.
+        # Runs saved before a step existed get it, skipped. Tree runs list
+        # their own steps.
 
-        if "kind" not in run:
+        if "kind" not in run and run.get("layout") != "tree":
             for name in release.STAGE_NAMES:
                 run["stages"].setdefault(name, release.new_stage(None, False))
 

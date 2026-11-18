@@ -138,7 +138,7 @@ class ApiTest(AppTestCase):
         while time.time() < deadline:
             run = self.request("GET", f"/api/v1/runs/{run_id}")[1]
 
-            if "Checking STG in Argo CD" in (run["stages"]["rollout"]["why"] or ""):
+            if "Checking STG in Argo CD" in (run["stages"]["rollout-stg"]["why"] or ""):
                 break
 
             time.sleep(0.1)
@@ -155,7 +155,7 @@ class ApiTest(AppTestCase):
         run = self.wait(run_id)
 
         self.assertEqual("success", run["status"], run["error"])
-        self.assertIn("rollout confirmed by Argo CD", run["stages"]["rollout"]["log"])
+        self.assertIn("rollout confirmed by Argo CD", run["stages"]["rollout-stg"]["log"])
 
     def test_release_is_answered_through_attention(self):
         status, body, _ = self.request(
@@ -167,7 +167,7 @@ class ApiTest(AppTestCase):
         item = self.wait_for_attention("confirm-rollout")
 
         self.assertEqual(run_id, item["runId"])
-        self.assertEqual("rollout", item["stage"])
+        self.assertEqual("rollout-int", item["stage"])
 
         status_body = self.request("GET", "/api/v1/status")[1]
 

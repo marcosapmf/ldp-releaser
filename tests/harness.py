@@ -438,11 +438,20 @@ class AppTestCase(unittest.TestCase):
             if on_tick:
                 on_tick(run)
 
-            rollout = run["stages"].get("rollout")
+            # Each environment's rollout is confirmed when it waits.
 
-            if (self.auto_confirm and rollout and rollout["status"] == "running" and
-                    not run["rolloutConfirmed"]):
+            waiting = [
+                name for name, stage in run["stages"].items()
+                if name.startswith("rollout-") and stage["status"] == "running" and
+                not run.get("rolloutsConfirmed", {}).get(name.partition("-")[2])
+            ]
 
+            legacy = run["stages"].get("rollout")
+
+            if legacy and legacy["status"] == "running" and not run["rolloutConfirmed"]:
+                waiting.append("rollout")
+
+            if self.auto_confirm and waiting:
                 self.call(f"/api/runs/{run_id}/confirm-rollout", {})
 
             time.sleep(0.1)

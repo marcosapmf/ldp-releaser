@@ -172,8 +172,9 @@ class ReleaseTest(AppTestCase):
         self.assertEqual(f"{1:040x}", tags["example-org/faro:faro-v1.2.3"])
 
         self.assertEqual(
-            ["Argo CD (STG)", "Argo CD (INT)", "Argo CD (PRD)"],
-            [link["label"] for link in run["stages"]["rollout"]["links"]])
+            [["Argo CD (STG)"], ["Argo CD (INT)"], ["Argo CD (PRD)"]],
+            [[link["label"] for link in run["stages"][f"rollout-{environment}"]["links"]]
+             for environment in ("stg", "int", "prd")])
 
         deploy = next(call for call in self.fakes.calls if call.get("job") == "deploy-faro")
 
@@ -316,15 +317,16 @@ class ResumeTest(AppTestCase):
 
         self.stop_app()
 
-        # Saved by an older version: no Dataflow step and no step order.
+        # Saved by an older version: steps one after the other, a single
+        # rollout, no Dataflow step and no step order.
 
         path = self.temp / "data" / "ldp-releaser" / "runs" / f"{run_id}.json"
         run = json.loads(path.read_text())
 
-        for key in ("dataflow", "stageOrder"):
+        for key in ("dataflow", "join", "lanes", "layout", "stageOrder", "tracks", "trunk"):
             run.pop(key)
 
-        run["stages"].pop("dataflow")
+        run["stages"].pop("rollout-stg")
         path.write_text(json.dumps(run))
 
         self.start_app()
@@ -399,30 +401,35 @@ class FaroEnvironmentsTest(AppTestCase):
             for call in self.fakes.calls if call.get("job") in ("build-faro", "deploy-faro")
         ]
 
-    def test_environments_are_built_and_deployed_one_after_the_other(self):
+    def builds(self):
+        return sorted(target for job, target in self.faro_calls() if job == "build-faro")
+
+    def deploys(self):
+        return sorted(target for job, target in self.faro_calls() if job == "deploy-faro")
+
+    def test_each_target_is_built_once_and_deployed_after_its_build(self):
         run = self.run_release(
             {"faroBranch": "main", "faroEnvironments": ["int", "stg"], "mode": "faro"})
 
         self.assertEqual("success", run["status"], run["error"])
         self.assertEqual(["stg", "int"], run["faroEnvironments"])
-        self.assertEqual(
-            [("build-faro", "stg"), ("deploy-faro", "stg"), ("build-faro", "prd"),
-             ("deploy-faro", "int")],
-            self.faro_calls())
-        self.assertLessEqual(
-            run["stages"]["faroDeploy-stg"]["finishedAt"],
-            run["stages"]["faroBuild-int"]["startedAt"])
-        self.assertEqual(
-            {"int": "registry.example.com/faro:prd-20260101-f000002",
-             "stg": "registry.example.com/faro:stg-20260101-f000001"},
-            run["faroImages"])
+        self.assertEqual(["prd", "stg"], self.builds())
+        self.assertEqual(["int", "stg"], self.deploys())
 
-        deploy_int = [
-            call for call in self.fakes.calls if call.get("job") == "deploy-faro"][1]
+        # The two builds run side by side; each deploy waits for its build.
+
+        self.assertLess(run["stages"]["faroBuild-prd"]["startedAt"], run["stages"]["faroBuild-stg"]["finishedAt"])
+        self.assertLessEqual(run["stages"]["faroBuild-prd"]["finishedAt"], run["stages"]["faroDeploy-int"]["startedAt"])
+        self.assertLessEqual(run["stages"]["faroBuild-stg"]["finishedAt"], run["stages"]["faroDeploy-stg"]["startedAt"])
+        self.assertIn("faro:prd-", run["faroImages"]["int"])
+        self.assertIn("faro:stg-", run["faroImages"]["stg"])
+
+        deploy_int = next(
+            call for call in self.fakes.calls
+            if call.get("job") == "deploy-faro" and call["params"]["ENVIRONMENT"] == "int")
 
         self.assertEqual(
-            {"ENVIRONMENT": "int", "IMAGE": "registry.example.com/faro:prd-20260101-f000002"},
-            deploy_int["params"])
+            {"ENVIRONMENT": "int", "IMAGE": run["faroImages"]["int"]}, deploy_int["params"])
 
     def test_a_failure_stops_the_next_environments(self):
         run = self.run_release(
@@ -430,13 +437,25 @@ class FaroEnvironmentsTest(AppTestCase):
              "mode": "faro"})
 
         self.assertEqual("failed", run["status"])
-        self.assertEqual("success", run["stages"]["faroDeploy-stg"]["status"])
-        self.assertEqual("failed", run["stages"]["faroBuild-int"]["status"])
+        self.assertEqual("failed", run["stages"]["faroBuild-prd"]["status"])
         self.assertEqual("skipped", run["stages"]["faroDeploy-int"]["status"])
-        self.assertEqual("skipped", run["stages"]["faroBuild-prd"]["status"])
+        self.assertEqual("skipped", run["stages"]["faroDeploy-prd"]["status"])
+        self.assertEqual(["prd", "stg"], self.builds())
+        self.assertNotIn("int", self.deploys())
+        self.assertNotIn("prd", self.deploys())
+
+    def test_environments_with_the_same_target_share_one_build(self):
+        run = self.run_release(
+            {"faroBranch": "main", "faroEnvironments": ["stg", "int", "prd"], "mode": "faro"})
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(["prd", "stg"], self.builds())
+        self.assertEqual(["int", "prd", "stg"], self.deploys())
+        self.assertEqual(run["faroImages"]["int"], run["faroImages"]["prd"])
+        self.assertNotIn("faroBuild-int", run["stages"])
+        self.assertEqual("Faro build prd (for INT and PRD)", run["stageLabels"]["faroBuild-prd"])
         self.assertEqual(
-            [("build-faro", "stg"), ("deploy-faro", "stg"), ("build-faro", "prd")],
-            self.faro_calls())
+            {"stg": ["faroDeploy-stg"], "int": ["faroDeploy-int"], "prd": ["faroDeploy-prd"]}, run["lanes"])
 
     def test_prd_tag_points_at_the_prd_build(self):
         run = self.run_release(
@@ -444,8 +463,15 @@ class FaroEnvironmentsTest(AppTestCase):
              "version": "2.0.0"})
 
         self.assertEqual("success", run["status"], run["error"])
+
+        # The two builds run side by side, so either can be #1.
+
+        prd_build = next(
+            build for (job, _), build in self.fakes.builds.items()
+            if job == "build-faro" and build["params"]["ENVIRONMENT"] == "prd")
+
         self.assertEqual(
-            f"{2:040x}", self.gh_state_data()["tags"]["example-org/faro:faro-v2.0.0"])
+            f"{prd_build['number']:040x}", self.gh_state_data()["tags"]["example-org/faro:faro-v2.0.0"])
 
 
 class AutoMergeTest(AppTestCase):
@@ -534,3 +560,154 @@ class HumanMergeTest(AppTestCase):
         self.assertNotIn("merges", self.gh_state_data())
         self.assertNotIn("checks passed, merged", run["stages"]["developMerge"]["log"])
         self.assertIn("merged (approved)", run["stages"]["developMerge"]["log"])
+
+
+class ReuseBuildsTest(AppTestCase):
+
+    def set_head(self, repository, branch, sha):
+        state_file = self.gh_state / "state.json"
+        state = {"next": 1, "pulls": {}, "tags": {}}
+
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+
+        state.setdefault("heads", {})[f"{repository}:{branch}"] = sha
+        self.gh_state.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state))
+
+    def builds(self, job):
+        return [call for call in self.fakes.calls if call.get("job") == job]
+
+    def test_an_unchanged_branch_reuses_the_last_asah_build(self):
+        first = self.run_release({"asahBranch": "main", "mode": "asah"})
+
+        self.assertEqual("success", first["status"], first["error"])
+
+        self.set_head("example-org/asah", "main", first["asahCommit"])
+
+        second = self.run_release({"asahBranch": "main", "mode": "asah"})
+
+        self.assertEqual("success", second["status"], second["error"])
+        self.assertEqual(1, len(self.builds("build-asah")))
+        self.assertTrue(second["stages"]["asahBuild"]["reused"])
+        self.assertEqual(first["asahImages"], second["asahImages"])
+        self.assertEqual(first["stages"]["asahBuild"]["url"], second["stages"]["asahBuild"]["url"])
+        self.assertIn("Reused build #1", second["stages"]["asahBuild"]["log"])
+
+    def test_a_new_commit_builds_again(self):
+        self.run_release({"asahBranch": "main", "mode": "asah"})
+        self.set_head("example-org/asah", "main", "f" * 40)
+
+        second = self.run_release({"asahBranch": "main", "mode": "asah"})
+
+        self.assertEqual("success", second["status"], second["error"])
+        self.assertEqual(2, len(self.builds("build-asah")))
+        self.assertFalse(second["stages"]["asahBuild"].get("reused"))
+
+    def test_reuse_can_be_turned_off(self):
+        first = self.run_release({"asahBranch": "main", "mode": "asah"})
+        self.set_head("example-org/asah", "main", first["asahCommit"])
+
+        second = self.run_release({"asahBranch": "main", "mode": "asah", "reuseBuilds": False})
+
+        self.assertEqual("success", second["status"], second["error"])
+        self.assertEqual(2, len(self.builds("build-asah")))
+
+    def test_a_later_run_deploys_the_faro_build_of_the_same_target(self):
+        first = self.run_release({"faroBranch": "main", "faroEnvironments": ["prd"], "mode": "faro"})
+
+        self.assertEqual("success", first["status"], first["error"])
+
+        self.set_head("example-org/faro", "main", first["faroCommits"]["prd"])
+
+        second = self.run_release({"faroBranch": "main", "faroEnvironments": ["int"], "mode": "faro"})
+
+        self.assertEqual("success", second["status"], second["error"])
+        self.assertEqual(1, len(self.builds("build-faro")))
+        self.assertEqual(first["faroImages"]["prd"], second["faroImages"]["int"])
+        self.assertEqual(
+            first["faroImages"]["prd"],
+            self.builds("deploy-faro")[-1]["params"]["IMAGE"])
+
+    def test_a_build_for_another_target_is_not_reused(self):
+        first = self.run_release({"faroBranch": "main", "faroEnvironments": ["stg"], "mode": "faro"})
+        self.set_head("example-org/faro", "main", first["faroCommits"]["stg"])
+
+        second = self.run_release({"faroBranch": "main", "faroEnvironments": ["prd"], "mode": "faro"})
+
+        self.assertEqual("success", second["status"], second["error"])
+        self.assertEqual(
+            [("build-faro", "stg"), ("build-faro", "prd")],
+            [(call["job"], call["params"]["ENVIRONMENT"]) for call in self.builds("build-faro")])
+
+
+class ResumeEndedRunTest(AppTestCase):
+
+    def wait_until(self, run_id, condition, timeout=60):
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            run = self.run_by_id(run_id)
+
+            if condition(run):
+                return run
+
+            time.sleep(0.1)
+
+        self.fail(f"run {run_id} never got there: {json.dumps(self.run_by_id(run_id))[:1500]}")
+
+    def test_a_run_cancelled_during_the_deploy_resumes_without_building_again(self):
+        self.fakes.hold_deploys = True
+
+        status, body = self.call("/api/runs", {"faroBranch": "main", "faroEnvironments": ["stg"], "mode": "faro"})
+        run_id = body["id"]
+
+        self.wait_until(run_id, lambda run: run["stages"]["faroDeploy-stg"]["status"] == "running")
+        self.call(f"/api/runs/{run_id}/cancel", {})
+
+        run = self.wait_until(run_id, lambda run: run["finishedAt"])
+
+        self.assertEqual("aborted", run["status"])
+        self.assertEqual("success", run["stages"]["faroBuild-stg"]["status"])
+        self.assertEqual("aborted", run["stages"]["faroDeploy-stg"]["status"])
+
+        self.fakes.hold_deploys = False
+
+        status, body = self.call(f"/api/runs/{run_id}/resume", {})
+
+        self.assertEqual(202, status, body)
+        self.assertEqual(["faroDeploy-stg"], body["retried"])
+        self.assertIn("faroBuild-stg", body["kept"])
+
+        run = self.wait(run_id)
+
+        self.assertEqual("success", run["status"], run["error"])
+
+        builds = [call for call in self.fakes.calls if call.get("job") == "build-faro"]
+        deploys = [call for call in self.fakes.calls if call.get("job") == "deploy-faro"]
+
+        self.assertEqual(1, len(builds))
+        self.assertEqual(2, len(deploys))
+        self.assertEqual(deploys[0]["params"]["IMAGE"], deploys[1]["params"]["IMAGE"])
+        self.assertIn("resumed: this step runs again", run["stages"]["faroDeploy-stg"]["log"])
+        self.assertEqual(1, len(run["resumedAt"]))
+
+    def test_only_an_ended_release_can_be_resumed(self):
+        self.fakes.hold_deploys = True
+
+        status, body = self.call("/api/runs", {"faroBranch": "main", "faroEnvironments": ["stg"], "mode": "faro"})
+        run_id = body["id"]
+
+        self.wait_until(run_id, lambda run: run["stages"]["faroDeploy-stg"]["status"] == "running")
+
+        status, body = self.call(f"/api/runs/{run_id}/resume", {})
+
+        self.assertEqual(409, status)
+        self.assertIn("still running", body["error"])
+
+        self.fakes.hold_deploys = False
+
+        run = self.wait(run_id)
+
+        self.assertEqual("success", run["status"])
+        self.assertEqual(409, self.call(f"/api/runs/{run_id}/resume", {})[0])

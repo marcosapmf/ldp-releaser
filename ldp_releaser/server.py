@@ -208,8 +208,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._fix(match.group(1))
 
         match = re.fullmatch(
-            r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets|relaunch-dataflow)",
+            r"/api/runs/(\w+)/(cancel|close-tickets|confirm-rollout|keep-tickets|relaunch-dataflow|resume)",
             path)
+
+        if match and match.group(2) == "resume":
+            return self._resume(match.group(1))
 
         if match:
             return self._run_action(match.group(1), match.group(2))
@@ -332,6 +335,27 @@ class Handler(BaseHTTPRequestHandler):
         return self.headers.get("Host") in (
             f"127.0.0.1:{self.port}", f"localhost:{self.port}")
 
+    def _resume(self, run_id):
+
+        # Starts an ended run again from the step that ended it; the steps
+        # that succeeded are kept.
+
+        run = release.runs.get(run_id)
+
+        if run is None:
+            return self._send_json(404, {"error": "Run not found"})
+
+        retried, kept = release.resume_plan(run)
+
+        try:
+            release.resume(run)
+        except ValueError as exception:
+            return self._send_json(409, {"error": str(exception)})
+
+        start_run(self.jenkins, self.jira, run)
+
+        return self._send_json(202, {"id": run["id"], "kept": kept, "retried": retried})
+
     def _run_action(self, run_id, action):
         with release.runs_lock:
             run = release.runs.get(run_id)
@@ -342,11 +366,23 @@ class Handler(BaseHTTPRequestHandler):
             if action == "cancel":
                 run["cancelRequested"] = True
             elif action == "confirm-rollout":
-                if run["stages"]["rollout"]["status"] != "running":
+
+                # Confirms the rollout the run is waiting for: one stage per
+                # environment, or the single one of runs saved before.
+
+                waiting = [
+                    name for name, stage in run["stages"].items()
+                    if (name == "rollout" or name.startswith("rollout-")) and stage["status"] == "running"
+                ]
+
+                if not waiting:
                     return self._send_json(
                         409, {"error": "The run is not waiting for a rollout"})
 
-                run["rolloutConfirmed"] = True
+                if waiting[0] == "rollout":
+                    run["rolloutConfirmed"] = True
+                else:
+                    run["rolloutsConfirmed"] = {**run.get("rolloutsConfirmed", {}), waiting[0].partition("-")[2]: True}
             elif action == "relaunch-dataflow":
                 pending = run.get("dataflowRelaunch")
 
@@ -502,7 +538,12 @@ class Handler(BaseHTTPRequestHandler):
                     502,
                     {"error": f"Could not look up open release tickets: {exception}"})
 
-        run = release.create_run(*values, discard_tickets, reuse_ticket)
+        # A build of the branch's current head is reused unless the form asks
+        # to build again.
+
+        run = release.create_run(
+            *values, discard_tickets, reuse_ticket,
+            reuse_builds=payload.get("reuseBuilds") is not False)
 
         start_run(self.jenkins, self.jira, run)
 

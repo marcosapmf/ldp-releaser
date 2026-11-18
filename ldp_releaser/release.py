@@ -5,6 +5,7 @@ Every step reads its settings from the team and personal files, and every
 change to a run is reported through `on_change` so it can be saved.
 """
 
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -411,7 +412,7 @@ def create_release_tickets(jira, run):
 def create_run(
         asah_branch, faro_environments, faro_branch, release_environments,
         tag_suffix, version, composer=False, mode="release", dataflow=(),
-        discard_tickets=(), reuse_ticket=None):
+        discard_tickets=(), reuse_ticket=None, reuse_builds=True):
 
     production = bool(
         set(settings["charts.production.environments"]) &
@@ -438,8 +439,10 @@ def create_run(
         "error": None,
         "faroBranch": faro_branch,
         "faroCommits": {},
+        "faroBuilds": {},
         "faroEnvironments": faro_environments,
         "faroImages": {},
+        "faroSharedBuilds": True,
         "finishedAt": None,
         "id": uuid.uuid4().hex[:8],
         "jiraTask": None,
@@ -451,8 +454,10 @@ def create_run(
         "productionPullRequest": None,
         "releaseEnvironments": release_environments,
         "releaseSummary": None,
+        "reuseBuilds": reuse_builds,
         "reuseTicket": reuse_ticket,
         "rolloutConfirmed": False,
+        "rolloutsConfirmed": {environment: False for environment in release_environments},
         "stages": {
             "asahBuild": new_stage(settings["asah.build_job"], asah_branch),
             "closeTickets": new_stage("jira", release_environments),
@@ -463,7 +468,6 @@ def create_run(
             "jira": new_stage("jira", release_environments),
             "productionMerge": new_stage("charts", production),
             "productionPullRequest": new_stage("charts", production),
-            "rollout": new_stage("argocd", release_environments),
             "tags": new_stage("github", version),
         },
         "status": "running",
@@ -472,33 +476,7 @@ def create_run(
         "version": version,
     }
 
-    # Faro gets a build and a deploy step per environment, one environment
-    # after the other.
-
-    labels = {}
-    order = []
-
-    for name in STAGE_NAMES:
-        if name == "faroDeploy":
-            continue
-
-        if name != "faroBuild":
-            order.append(name)
-
-            continue
-
-        for environment in faro_environments:
-            for step, job in (("build", "faro.build_job"), ("deploy", "faro.deploy_job")):
-                stage_name = f"faro{step.capitalize()}-{environment}"
-
-                run["stages"][stage_name] = new_stage(settings[job], True)
-
-                order.append(stage_name)
-
-                labels[stage_name] = f"Faro {step} ({environment})"
-
-    run["stageLabels"] = labels
-    run["stageOrder"] = order
+    tree_layout(run, composer, dataflow, faro_environments, release_environments)
 
     if release_environments:
         run["releaseSummary"] = release_summary(release_environments)
@@ -509,6 +487,124 @@ def create_run(
     on_change(run)
 
     return run
+
+
+def tree_layout(run, composer_on, dataflow_templates, faro_environments, release_environments):
+
+    # A release as a tree: the Asah build; then, side by side, the charts
+    # (tickets, pull requests, merges) and the Faro builds (one per build
+    # target); then a branch per environment that goes on as soon as its own
+    # rollout is confirmed (rollout, Composer DAGs, Dataflow, Faro deploy);
+    # then the steps that need every branch (tags, closing the tickets).
+
+    from . import composer
+
+    stages = run["stages"]
+    labels = {}
+
+    for name in ("composer", "dataflow"):
+        stages.pop(name, None)
+
+    def add(name, job, label):
+        stages[name] = new_stage(job, True)
+        labels[name] = label
+
+        return name
+
+    faro_builds = []
+
+    for target in dict.fromkeys(faro_target(environment) for environment in faro_environments):
+        sharing = [environment for environment in faro_environments if faro_target(environment) == target]
+
+        faro_builds.append(add(
+            f"faroBuild-{target}", settings["faro.build_job"],
+            f"Faro build {target} (for {list_environments(sharing)})"))
+
+    lanes = {}
+
+    for environment in settings.environments():
+        if environment not in release_environments and environment not in faro_environments:
+            continue
+
+        names = []
+
+        if environment in release_environments:
+            names.append(add(f"rollout-{environment}", "argocd", "Rollout confirmed"))
+
+            configurations = composer.configurations_for([environment])
+
+            if composer_on and configurations:
+                names.append(add(f"composer-{environment}", "gcloud", "Composer DAGs"))
+
+            if dataflow_templates and configurations:
+                names.append(add(f"dataflow-{environment}", "gcloud", "Dataflow"))
+
+        if environment in faro_environments:
+            names.append(add(
+                f"faroDeploy-{environment}", settings["faro.deploy_job"],
+                f"Faro deploy ({faro_target(environment)} build)"))
+
+        lanes[environment] = names
+
+    charts = ["jira", "developPullRequest", "developMerge", "productionPullRequest", "productionMerge"]
+
+    run.update(
+        join=["tags", "closeTickets"], lanes=lanes, layout="tree",
+        stageLabels=labels, trunk=["asahBuild"],
+        tracks={"Charts": charts, "Faro builds": faro_builds})
+    run["stageOrder"] = [
+        "asahBuild", *charts, *faro_builds,
+        *[name for names in lanes.values() for name in names], "tags", "closeTickets"]
+
+
+# Resuming an ended run: the step that ended it (cancelled or failed) and the
+# steps that never ran start again; every step that succeeded stays done and
+# is not repeated, so a run cancelled during the Faro deploy deploys the image
+# its build already pushed. The engine then goes on as after a restart.
+
+OUTSIDE_STEPS = {
+    "closeTickets": "closes Jira tickets", "developPullRequest": "opens a charts pull request",
+    "jira": "creates or moves Jira tickets", "productionPullRequest": "opens a charts pull request",
+    "tags": "creates GitHub tags",
+}
+
+
+def resume_plan(run):
+    retried = [name for name, stage in run["stages"].items() if stage["status"] in ("failed", "aborted")]
+    kept = [name for name, stage in run["stages"].items() if stage_done(run, name)]
+
+    return retried, kept
+
+
+def resume(run):
+    with runs_lock:
+        if run["finishedAt"] is None:
+            raise ValueError("The run is still running")
+
+        if run.get("kind") in ("composer", "dataflow") or run["status"] not in ("aborted", "failed"):
+            raise ValueError("Only a cancelled or failed release can be resumed")
+
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        for stage in run["stages"].values():
+            if stage["status"] in ("failed", "aborted"):
+                stage.update(
+                    failure=None, finishedAt=None, logOffset=0, needsGcloudLogin=False, number=None,
+                    queueUrl=None, result=None, startedAt=None, status="pending", url=None, why=None)
+                stage["log"] = (stage["log"] + f"\n{stamp} resumed: this step runs again\n")[-LOG_TAIL_CHARS:]
+
+            # A step the run never reached (as opposed to one it ran and
+            # skipped by a decision, which logged it) gets its chance again;
+            # the engine skips it once more if the run does not need it.
+
+            elif stage["status"] == "skipped" and not stage["log"] and not stage["startedAt"]:
+                stage["status"] = "pending"
+
+        run.update(
+            cancelRequested=False, error=None, finishedAt=None, halted=False, status="running",
+            resumedAt=[*run.get("resumedAt", []), time.time()])
+
+    on_change(run)
 
 
 def discard_release_ticket(jira, run, task):
@@ -527,6 +623,13 @@ def discard_release_ticket(jira, run, task):
 
 
 def execute(jenkins, jira, run):
+
+    # Runs created as a tree run their steps as a graph; runs saved before
+    # run them one after the other.
+
+    if run.get("layout") == "tree":
+        return execute_tree(jenkins, jira, run)
+
     steps = [
         ("asahBuild", bool(run["asahBranch"]), lambda: build_asah(jenkins, run)),
         (
@@ -560,11 +663,7 @@ def execute(jenkins, jira, run):
                 lambda: wait_for_merge(
                     run, "productionMerge", run["productionPullRequest"])),
         ),
-        (
-            "rollout", bool(run["releaseEnvironments"]),
-            lambda: run_local_stage(
-                run, "rollout", lambda: wait_for_rollout_confirmation(run)),
-        ),
+        *rollout_steps(run),
         (
             "composer", bool(run.get("composer")),
             lambda: run_local_stage(run, "composer", lambda: composer_step(run)),
@@ -611,6 +710,170 @@ def execute(jenkins, jira, run):
         finish(run)
 
 
+# gcloud keeps one active configuration for the whole machine, so the steps
+# that switch it (Composer DAGs, Dataflow) take turns across branches.
+
+gcloud_lock = threading.Lock()
+
+
+def with_gcloud(run, stage_name, function):
+    def locked():
+        if gcloud_lock.locked():
+            update_stage(run, stage_name, why="Waits for another environment's gcloud step")
+
+        with gcloud_lock:
+            update_stage(run, stage_name, why=None)
+
+            return function()
+
+    return run_local_stage(run, stage_name, locked)
+
+
+def tree_steps(jenkins, jira, run):
+
+    # (stage, the stages it needs, whether it runs, what it does). A stage
+    # that does not run counts as done for the stages that need it.
+
+    from . import composer, dataflow
+
+    releasing = bool(run["releaseEnvironments"])
+    production = needs_production(run)
+    production_environments = set(settings["charts.production.environments"])
+    local = lambda name, function: lambda: run_local_stage(run, name, function)
+
+    steps = [
+        ("asahBuild", [], bool(run["asahBranch"]), lambda: build_asah(jenkins, run)),
+        ("jira", ["asahBuild"], releasing, local("jira", lambda: create_release_tickets(jira, run))),
+        ("developPullRequest", ["jira"], releasing, local("developPullRequest", lambda: open_develop_pull_request(run))),
+        ("developMerge", ["developPullRequest"], releasing,
+         local("developMerge", lambda: wait_for_merge(run, "developMerge", run["developPullRequest"]))),
+        ("productionPullRequest", ["developMerge"], production,
+         local("productionPullRequest", lambda: open_production_pull_request(run))),
+        ("productionMerge", ["productionPullRequest"], production,
+         local("productionMerge", lambda: wait_for_merge(run, "productionMerge", run["productionPullRequest"]))),
+    ]
+
+    for name in run["tracks"]["Faro builds"]:
+        target = name.partition("-")[2]
+
+        steps.append((name, ["asahBuild"], True, lambda target=target, name=name: build_faro(jenkins, run, target, name)))
+
+    for environment, names in run["lanes"].items():
+
+        # A rollout needs the merge that changed its environment's values:
+        # develop for STG, production for INT and PRD.
+
+        previous = None
+
+        if environment in run["releaseEnvironments"]:
+            previous = "productionMerge" if production and environment in production_environments else "developMerge"
+
+        for name in names:
+            needs = [previous] if previous else []
+
+            if name.startswith("rollout-"):
+                action = local(name, lambda environment=environment, name=name: wait_for_rollout_confirmation(run, [environment], name))
+            elif name.startswith("composer-"):
+                action = lambda environment=environment, name=name: with_gcloud(
+                    run, name, lambda: composer.release_step(run, name, [environment]))
+            elif name.startswith("dataflow-"):
+                action = lambda environment=environment, name=name: with_gcloud(
+                    run, name, lambda: dataflow.release_step(run, name, [environment]))
+            else:
+                needs.append(f"faroBuild-{faro_target(environment)}")
+                action = lambda environment=environment, name=name: run_stage(
+                    jenkins, run, name, settings["faro.deploy_job"],
+                    {
+                        settings["faro.environment_parameter"]: environment,
+                        settings["faro.image_parameter"]: faro_image(run, environment),
+                    })
+
+            steps.append((name, needs, True, action))
+            previous = name
+
+    everything = [name for name, _, _, _ in steps]
+
+    steps.append(("tags", everything, bool(run["version"]), local("tags", lambda: create_release_tags(run))))
+    steps.append(("closeTickets", [*everything, "tags"], releasing, local("closeTickets", lambda: close_release_tickets(jira, run))))
+
+    return steps
+
+
+def execute_tree(jenkins, jira, run):
+
+    # Each step starts as soon as the steps it needs are done, so the charts
+    # and the Faro builds run side by side and every environment goes on once
+    # its own rollout is confirmed. After a failure or a cancel nothing new
+    # starts; the steps already running end on their own.
+
+    steps = tree_steps(jenkins, jira, run)
+    update_run(run, halted=False)
+    done = set()
+    started = {}
+    result = "SUCCESS"
+    error = None
+
+    try:
+        activate_release_configuration(run)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(steps)) as pool:
+            while True:
+                for name, needs, enabled, action in steps:
+                    if name in done or name in started:
+                        continue
+
+                    if not enabled or stage_done(run, name):
+                        done.add(name)
+
+                        continue
+
+                    if result == "SUCCESS" and not run["cancelRequested"] and all(need in done for need in needs):
+                        started[name] = pool.submit(action)
+
+                running = {future: name for name, future in started.items() if not future.done()}
+                finished = [name for name, future in started.items() if future.done() and name not in done]
+
+                for name in finished:
+                    try:
+                        outcome = started[name].result()
+                    except Exception as exception:
+                        outcome = "FAILURE"
+                        error = error or str(exception)
+
+                    if outcome in ("SUCCESS", None):
+                        done.add(name)
+                    else:
+                        if result == "SUCCESS":
+                            result = "ABORTED" if outcome == "ABORTED" else "FAILURE"
+
+                            # The other branches stop waiting for people.
+
+                            update_run(run, halted=True)
+
+                        done.add(name)
+
+                if finished:
+                    continue
+
+                if not running:
+                    break
+
+                concurrent.futures.wait(running, return_when=concurrent.futures.FIRST_COMPLETED)
+
+        if error:
+            update_run(run, error=error, status="failed")
+        elif result == "SUCCESS" and not run["cancelRequested"]:
+            update_run(run, status="success")
+        elif result == "ABORTED" or run["cancelRequested"]:
+            update_run(run, status="aborted")
+        else:
+            update_run(run, status="failed")
+    except Exception as exception:
+        update_run(run, error=str(exception), status="failed")
+    finally:
+        finish(run)
+
+
 def activate_release_configuration(run):
 
     # Starting a release makes the first gcloud configuration of its
@@ -639,15 +902,25 @@ def activate_release_configuration(run):
 
 
 def build_asah(jenkins, run):
-    result = run_stage(
-        jenkins, run, "asahBuild", settings["asah.build_job"],
-        {settings["asah.branch_parameter"]: run["asahBranch"]})
+    params = {settings["asah.branch_parameter"]: run["asahBranch"]}
 
-    if result != "SUCCESS":
-        return result
+    reused = reuse_build(
+        jenkins, run, "asahBuild", settings["asah.build_job"], params,
+        settings["asah.repository"], run["asahBranch"],
+        settings.compiled("asah.image_pattern"))
 
-    commit, images = inspect_build(
-        jenkins, settings.compiled("asah.image_pattern"), run, "asahBuild")
+    if reused:
+        commit, images = reused
+        result = "SUCCESS"
+    else:
+        result = run_stage(
+            jenkins, run, "asahBuild", settings["asah.build_job"], params)
+
+        if result != "SUCCESS":
+            return result
+
+        commit, images = inspect_build(
+            jenkins, settings.compiled("asah.image_pattern"), run, "asahBuild")
 
     update_run(run, asahCommit=commit, asahImages=images)
 
@@ -657,29 +930,46 @@ def build_asah(jenkins, run):
     return result
 
 
-def build_faro(jenkins, run, environment, stage_name):
-    result = run_stage(
-        jenkins, run, stage_name, settings["faro.build_job"],
-        {
-            settings["faro.branch_parameter"]: run["faroBranch"],
-            settings["faro.environment_parameter"]:
-                settings["faro.build_environments"][environment],
-        })
+def build_faro(jenkins, run, target, stage_name):
+    params = {
+        settings["faro.branch_parameter"]: run["faroBranch"],
+        settings["faro.environment_parameter"]: target,
+    }
 
-    if result != "SUCCESS":
-        return result
+    reused = reuse_build(
+        jenkins, run, stage_name, settings["faro.build_job"], params,
+        settings["faro.repository"], run["faroBranch"],
+        settings.compiled("faro.image_pattern"))
 
-    commit, images = inspect_build(
-        jenkins, settings.compiled("faro.image_pattern"), run, stage_name)
+    if reused:
+        commit, images = reused
+        result = "SUCCESS"
+    else:
+        result = run_stage(
+            jenkins, run, stage_name, settings["faro.build_job"], params)
+
+        if result != "SUCCESS":
+            return result
+
+        commit, images = inspect_build(
+            jenkins, settings.compiled("faro.image_pattern"), run, stage_name)
 
     if not images:
         raise RuntimeError(
             "The Faro build passed, but its log has no image matching "
             "faro.image_pattern")
 
+    # Every environment of the run built for this target deploys this image.
+
+    environments = [
+        environment for environment in faro_environments(run)
+        if faro_target(environment) == target
+    ]
+
     with runs_lock:
-        run["faroCommits"] = {**run.get("faroCommits", {}), environment: commit}
-        run["faroImages"] = {**run.get("faroImages", {}), environment: images[-1]}
+        run["faroBuilds"] = {**run.get("faroBuilds", {}), target: {"commit": commit, "image": images[-1]}}
+        run["faroCommits"] = {**run.get("faroCommits", {}), **{environment: commit for environment in environments}}
+        run["faroImages"] = {**run.get("faroImages", {}), **{environment: images[-1] for environment in environments}}
 
     on_change(run)
 
@@ -703,7 +993,17 @@ def faro_image(run, environment):
     return run.get("faroImages", {}).get(environment) or run.get("faroImage")
 
 
+def faro_target(environment):
+    return settings["faro.build_environments"][environment]
+
+
 def faro_stage_names(run, environment):
+
+    # Runs saved before shared builds have a build per environment.
+
+    if run.get("faroSharedBuilds"):
+        return f"faroBuild-{faro_target(environment)}", f"faroDeploy-{environment}"
+
     if f"faroBuild-{environment}" in run["stages"]:
         return f"faroBuild-{environment}", f"faroDeploy-{environment}"
 
@@ -713,19 +1013,38 @@ def faro_stage_names(run, environment):
 def faro_steps(jenkins, run):
 
     # Build then deploy, environment by environment: the next build starts
-    # only once the previous deploy has finished.
+    # only once the previous deploy has finished, and a target already built
+    # in the run is not built again.
 
     steps = []
+    planned = set()
 
     for environment in faro_environments(run):
         build_name, deploy_name = faro_stage_names(run, environment)
 
-        steps.append(
-            (
-                build_name, True,
-                lambda environment=environment, build_name=build_name: build_faro(
-                    jenkins, run, environment, build_name),
-            ))
+        if build_name not in planned:
+            planned.add(build_name)
+
+            target = environment
+
+            if run.get("faroSharedBuilds") or build_name == "faroBuild":
+                target = faro_target(environment)
+
+            if run.get("faroSharedBuilds"):
+                steps.append(
+                    (
+                        build_name, True,
+                        lambda target=target, build_name=build_name: build_faro(
+                            jenkins, run, target, build_name),
+                    ))
+            else:
+                steps.append(
+                    (
+                        build_name, True,
+                        lambda environment=environment, build_name=build_name: build_faro_legacy(
+                            jenkins, run, environment, build_name),
+                    ))
+
         steps.append(
             (
                 deploy_name, True,
@@ -738,6 +1057,37 @@ def faro_steps(jenkins, run):
             ))
 
     return steps
+
+
+def build_faro_legacy(jenkins, run, environment, stage_name):
+
+    # A run saved before shared builds, resumed: one build per environment.
+
+    result = run_stage(
+        jenkins, run, stage_name, settings["faro.build_job"],
+        {
+            settings["faro.branch_parameter"]: run["faroBranch"],
+            settings["faro.environment_parameter"]: faro_target(environment),
+        })
+
+    if result != "SUCCESS":
+        return result
+
+    commit, images = inspect_build(
+        jenkins, settings.compiled("faro.image_pattern"), run, stage_name)
+
+    if not images:
+        raise RuntimeError(
+            "The Faro build passed, but its log has no image matching "
+            "faro.image_pattern")
+
+    with runs_lock:
+        run["faroCommits"] = {**run.get("faroCommits", {}), environment: commit}
+        run["faroImages"] = {**run.get("faroImages", {}), environment: images[-1]}
+
+    on_change(run)
+
+    return result
 
 
 def composer_step(run):
@@ -829,6 +1179,112 @@ def inspect_build(jenkins, image_pattern, run, stage_name):
         commit = commits[-1]
 
     return commit, list(dict.fromkeys(image_pattern.findall(console)))
+
+
+# A build already made of the branch's current head is used again instead of
+# building the same commit twice, so every environment gets exactly the
+# images the earlier ones got (STG on Monday, INT and PRD on Thursday). Any
+# successful build of the job with the same parameters counts, whoever
+# started it. A new commit on the branch, or a run started with
+# reuseBuilds off, builds again.
+
+REUSE_CANDIDATES = 3
+
+
+def branch_head(repository, branch):
+    completed = subprocess.run(
+        ["gh", "api", f"repos/{repository}/commits/{urllib.parse.quote(branch, safe='')}", "--jq", ".sha"],
+        capture_output=True, text=True, timeout=60)
+
+    if completed.returncode != 0:
+        lines = (completed.stderr or completed.stdout).strip().splitlines()
+
+        raise RuntimeError(lines[-1] if lines else "gh failed")
+
+    return completed.stdout.strip()
+
+
+def find_reusable_build(jenkins, job, params, head, image_pattern):
+    data = jenkins.get_json(
+        jenkins.job_url(job) + "api/json",
+        "builds[number,url,result,actions[parameters[name,value]]]{0,40}")
+
+    # Newest first; the newest successful build with these parameters is the
+    # only one that can have built the current head.
+
+    checked = 0
+
+    for build in data.get("builds", []):
+        if build.get("result") != "SUCCESS":
+            continue
+
+        values = {
+            parameter["name"]: parameter.get("value")
+            for action in build.get("actions", []) or []
+            for parameter in (action or {}).get("parameters", [])
+        }
+
+        if any(values.get(name) != value for name, value in params.items()):
+            continue
+
+        checked += 1
+
+        console = jenkins.get_text(build["url"] + "consoleText")
+        commits = settings.compiled("jenkins.commit_pattern").findall(console)
+        images = list(dict.fromkeys(image_pattern.findall(console)))
+
+        if commits and commits[-1] == head and images:
+            return build, commits[-1], images
+
+        if checked >= REUSE_CANDIDATES:
+            break
+
+    return None
+
+
+def reuse_build(jenkins, run, stage_name, job, params, repository, branch, image_pattern):
+
+    # Only before the stage reached Jenkins: a resumed stage keeps its build.
+
+    stage = run["stages"][stage_name]
+
+    if not run.get("reuseBuilds", True) or stage["url"] or stage["queueUrl"]:
+        return None
+
+    try:
+        head = branch_head(repository, branch)
+        found = find_reusable_build(jenkins, job, params, head, image_pattern)
+    except Exception as exception:
+        append_log(run, stage_name, f"Could not look for an earlier build to reuse ({exception}); building\n")
+
+        return None
+
+    if not found:
+        append_log(run, stage_name, f"No earlier build of {branch} at {head[:7]}; building\n")
+
+        return None
+
+    build, commit, images = found
+
+    if stage_name == "asahBuild":
+        try:
+            extract_tag_suffix(images)
+        except RuntimeError as exception:
+            append_log(run, stage_name, f"Build #{build['number']} built {commit[:7]} but cannot be reused ({exception}); building\n")
+
+            return None
+
+    now = time.time()
+
+    update_stage(
+        run, stage_name, finishedAt=now, number=build["number"], parameters=params,
+        result="SUCCESS", reused=True, startedAt=now, status="success", url=build["url"])
+    append_log(
+        run, stage_name,
+        f"Reused build #{build['number']}: it built {commit[:7]}, the head of {branch}, so there is nothing new to build.\n"
+        + "".join(f"  {image}\n" for image in images))
+
+    return commit, images
 
 
 def is_prd_release(faro_branch, faro_environments, release_environments):
@@ -1500,16 +1956,23 @@ def set_tag_suffix(relative_path, tag_suffix, worktree):
     path.write_text(text)
 
 
-def sleep_unless_cancelled(run, seconds):
+def sleep_unless_cancelled(run, seconds, halt=False):
+
+    # With halt, also stops once another branch of a tree run failed: a step
+    # waiting for a person or for Argo CD would otherwise keep the run open.
+
+    def stop():
+        return run["cancelRequested"] or (halt and run.get("halted"))
+
     deadline = time.time() + seconds
 
     while time.time() < deadline:
-        if run["cancelRequested"]:
+        if stop():
             return True
 
         time.sleep(min(1, seconds))
 
-    return run["cancelRequested"]
+    return bool(stop())
 
 
 def stage_done(run, stage_name):
@@ -1525,9 +1988,12 @@ def stage_done(run, stage_name):
         return False
 
     if stage_name.startswith("faroBuild"):
-        build_environment = stage_name.partition("-")[2] or run.get("environment")
+        suffix = stage_name.partition("-")[2]
 
-        if not faro_image(run, build_environment):
+        if run.get("faroSharedBuilds"):
+            if not run.get("faroBuilds", {}).get(suffix):
+                return False
+        elif not faro_image(run, suffix or run.get("environment")):
             return False
 
     if stage["status"] == "success":
@@ -1900,11 +2366,46 @@ def wait_for_merge(run, stage_name, pull_request_url):
                 if note.endswith(f"merged ({merge_method(stage_name)})"):
                     continue
 
-        if sleep_unless_cancelled(run, MERGE_POLL_SECONDS):
+        if sleep_unless_cancelled(run, MERGE_POLL_SECONDS, halt=True):
             return "ABORTED"
 
 
-def wait_for_rollout_confirmation(run):
+def rollout_steps(run):
+
+    # Runs saved before the split have one rollout for all environments
+    # (runs saved later also get a skipped "rollout" stage when loaded).
+
+    split = any(name.startswith("rollout-") for name in run["stages"])
+
+    if not split:
+        return [
+            (
+                "rollout", bool(run["releaseEnvironments"]),
+                lambda: run_local_stage(
+                    run, "rollout",
+                    lambda: wait_for_rollout_confirmation(run, run["releaseEnvironments"], "rollout")),
+            ),
+        ]
+
+    return [
+        (
+            f"rollout-{environment}", True,
+            lambda environment=environment: run_local_stage(
+                run, f"rollout-{environment}",
+                lambda: wait_for_rollout_confirmation(run, [environment], f"rollout-{environment}")),
+        )
+        for environment in run["releaseEnvironments"]
+    ]
+
+
+def rollout_confirmed(run, stage_name):
+    if stage_name == "rollout":
+        return run["rolloutConfirmed"]
+
+    return run.get("rolloutsConfirmed", {}).get(stage_name.partition("-")[2], False)
+
+
+def wait_for_rollout_confirmation(run, environments, stage_name):
 
     # Environments with an Argo CD token are checked automatically; the
     # others wait for a person to confirm. The button always works, as an
@@ -1915,22 +2416,22 @@ def wait_for_rollout_confirmation(run):
     search = settings["argocd.search"]
     instances = {}
 
-    for environment in run["releaseEnvironments"]:
+    for environment in environments:
         url = settings["argocd.urls"][environment].rstrip("/")
 
         instances.setdefault(url, []).append(environment.upper())
 
-    for url, environments in instances.items():
+    for url, names in instances.items():
         add_stage_link(
-            run, "rollout", f"Argo CD ({', '.join(environments)})",
+            run, stage_name, f"Argo CD ({', '.join(names)})",
             f"{url}/applications?search={urllib.parse.quote(search)}")
 
     automatic = [
-        environment for environment in run["releaseEnvironments"]
+        environment for environment in environments
         if environment in argocd.watched(settings)
     ]
     manual = [
-        environment for environment in run["releaseEnvironments"]
+        environment for environment in environments
         if environment not in automatic
     ]
 
@@ -1942,18 +2443,18 @@ def wait_for_rollout_confirmation(run):
             f"run tag suffix {run['tagSuffix']} and are Healthy, then confirm.")
 
     if not automatic:
-        update_stage(run, "rollout", why=manual_note)
+        update_stage(run, stage_name, why=manual_note)
 
     last_summaries = {}
 
-    while not run["rolloutConfirmed"]:
+    while not rollout_confirmed(run, stage_name):
         if automatic:
             states = rollout_states(automatic, run)
 
             for name, status, summary in states:
                 if last_summaries.get(name) != (status, summary):
                     append_log(
-                        run, "rollout",
+                        run, stage_name,
                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} {name}: {status}, {summary}\n")
 
                     last_summaries[name] = (status, summary)
@@ -1970,10 +2471,10 @@ def wait_for_rollout_confirmation(run):
             if not pending and not manual:
                 for name, status, summary in states:
                     if status == "superseded":
-                        append_log(run, "rollout", f"Warning: {name} was {summary}\n")
+                        append_log(run, stage_name, f"Warning: {name} was {summary}\n")
 
                 append_log(
-                    run, "rollout",
+                    run, stage_name,
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed by Argo CD\n")
 
                 return None
@@ -1986,14 +2487,14 @@ def wait_for_rollout_confirmation(run):
                 checked += ": done"
 
             update_stage(
-                run, "rollout",
+                run, stage_name,
                 why=" ".join(part for part in (checked + ".", manual_note) if part))
 
-        if sleep_unless_cancelled(run, ARGOCD_POLL_SECONDS):
+        if sleep_unless_cancelled(run, ARGOCD_POLL_SECONDS, halt=True):
             return "ABORTED"
 
     append_log(
-        run, "rollout", f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed by hand\n")
+        run, stage_name, f"{time.strftime('%Y-%m-%d %H:%M:%S')} rollout confirmed by hand\n")
 
 
 def rollout_states(environments, run):

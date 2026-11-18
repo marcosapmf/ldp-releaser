@@ -131,8 +131,38 @@ Faro. Each tab shows its own latest run; earlier runs are in **History**.
 
 Each section of the form is optional; leave it empty to skip those steps.
 
+A release runs as a tree, so it is not slower than its slowest branch:
+
+- **Shared**: the Asah build first. Once it is done, the charts (Jira
+  tickets, the pull requests to develop and production, their merges) and
+  the Faro builds (one per build target, side by side) run at the same time.
+- **One branch per environment**: its rollout is confirmed on its own (by
+  Argo CD or by hand), then its Composer DAGs, its Dataflow templates and its
+  Faro deploy follow, without waiting for the other environments. STG's
+  rollout needs only the develop merge; INT's and PRD's need the production
+  merge. A Faro deploy also waits for its build. The Composer and Dataflow
+  steps switch the machine's active gcloud configuration, so they take turns
+  across branches.
+- **After every environment**: the GitHub tags and closing the tickets.
+
+When a step fails, nothing new starts and the steps waiting for a person
+(a rollout or a merge) stop; Jenkins builds already running finish. Runs
+started before this layout keep running their steps one after the other.
+
+A cancelled or failed release can be **resumed** (button on the run, or
+`POST /api/v1/runs/{id}/resume`): the step that ended it and the steps that
+never ran start again, and every step that succeeded is kept. A run cancelled
+during the Faro deploy deploys the image its build already pushed, without
+building again. A Jira or GitHub step that stopped part way runs again from
+its start, so the page asks you to check what it already did.
+
+The numbered steps below describe what each step does.
+
 1. **Asah build**: runs the build job for the branch and reads the image tag
-   suffix and the built commit from its log.
+   suffix and the built commit from its log. When a successful build of the
+   job already built the branch's current head (in this run, an earlier one
+   or by hand), it is reused instead, so every environment gets the same
+   images; **Build again even if the branch has not changed** turns that off.
 2. **Jira tickets**: creates a Task and a Technical Task (or reuses open
    ones, see below) and moves them to In Progress.
 3. **Charts pull request**: sets the tag suffix in each selected
@@ -160,8 +190,11 @@ Each section of the form is optional; leave it empty to skip those steps.
    setup): builds the released Asah commit and deploys the ticked templates
    to the same configurations, with the release's tag suffix as the
    version (see below).
-8. **Faro build and deploy**: builds the branch for the configured build
-   environment and deploys the image it pushed.
+8. **Faro build and deploy**: builds the branch once per configured build
+   target and deploys the image it pushed to each environment of that target
+   (INT and PRD share the `prd` build). A build of the branch's current head
+   for the same target is reused, as for Asah. STG keeps its own build: the
+   Faro frontend has the environment built in.
 9. **GitHub tags** (PRD releases only): tags the exact commits that were
    built.
 10. **Closing the tickets**: automatic for PRD releases; otherwise the page

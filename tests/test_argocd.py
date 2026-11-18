@@ -38,7 +38,7 @@ class RolloutCheckTest(AppTestCase):
         git("push", "-q", "origin", "develop", cwd=clone)
 
     def rollout_log(self, run):
-        return run["stages"]["rollout"]["log"]
+        return run["stages"]["rollout-stg"]["log"]
 
     def test_stg_rollout_is_confirmed_by_argocd(self):
         run = self.run_release(
@@ -71,7 +71,7 @@ class RolloutCheckTest(AppTestCase):
             {"releaseEnvironments": ["stg"], "tagSuffix": "20260101-1234567"})
 
         self.assertEqual("failed", run["status"])
-        self.assertEqual("failed", run["stages"]["rollout"]["status"])
+        self.assertEqual("failed", run["stages"]["rollout-stg"]["status"])
         self.assertIn(
             "team-stg-asah: Job osbasahupgrade (PreSync hook) failed: Job has reached the "
             "specified backoff limit",
@@ -83,7 +83,7 @@ class RolloutCheckTest(AppTestCase):
         app["health"] = "Degraded"
 
         def recover(run):
-            if "CrashLoopBackOff" in run["stages"]["rollout"]["log"]:
+            if "CrashLoopBackOff" in run["stages"]["rollout-stg"]["log"]:
                 app["health"] = "Healthy"
 
             self.keep_tickets(run)
@@ -99,7 +99,7 @@ class RolloutCheckTest(AppTestCase):
         pushed = []
 
         def supersede(run):
-            if run["stages"]["rollout"]["status"] == "running" and not pushed:
+            if run["stages"]["rollout-stg"]["status"] == "running" and not pushed:
                 pushed.append(True)
 
                 self.push_stg_suffix("20260202-7777777")
@@ -126,23 +126,57 @@ class RolloutCheckTest(AppTestCase):
         while time.time() < deadline:
             run = self.run_by_id(run_id)
 
-            if "Checking STG in Argo CD: done" in (run["stages"]["rollout"]["why"] or ""):
+            if run["stages"]["rollout-int"]["status"] == "running" and run["stages"]["rollout-int"]["why"]:
                 break
 
             time.sleep(0.1)
 
-        self.assertIn("Check in Argo CD that the asah apps for INT", run["stages"]["rollout"]["why"])
+        # STG is confirmed by Argo CD on its own; INT waits for the button.
+
+        self.assertEqual("success", run["stages"]["rollout-stg"]["status"])
+        self.assertIn("rollout confirmed by Argo CD", run["stages"]["rollout-stg"]["log"])
+        self.assertIn("Check in Argo CD that the asah apps for INT", run["stages"]["rollout-int"]["why"])
 
         time.sleep(1)
 
-        self.assertEqual("running", self.run_by_id(run_id)["stages"]["rollout"]["status"])
+        self.assertEqual("running", self.run_by_id(run_id)["stages"]["rollout-int"]["status"])
 
         self.call(f"/api/runs/{run_id}/confirm-rollout", {})
 
         run = self.wait(run_id, self.keep_tickets)
 
         self.assertEqual("success", run["status"], run["error"])
-        self.assertIn("rollout confirmed by hand", self.rollout_log(run))
+        self.assertIn("rollout confirmed by hand", run["stages"]["rollout-int"]["log"])
+
+    def test_each_environment_is_confirmed_on_its_own(self):
+        status, body = self.call(
+            "/api/runs", {"releaseEnvironments": ["int", "prd"], "tagSuffix": "20260101-1234567"})
+        run_id = body["id"]
+
+        # PRD has an Argo CD token here and INT does not: Argo CD confirms PRD
+        # while INT still waits for its button.
+
+        deadline = time.time() + 60
+
+        while time.time() < deadline:
+            run = self.run_by_id(run_id)
+
+            if run["stages"]["rollout-prd"]["status"] == "success":
+                break
+
+            time.sleep(0.1)
+
+        self.assertEqual("success", run["stages"]["rollout-prd"]["status"])
+        self.assertEqual("running", run["stages"]["rollout-int"]["status"])
+        self.assertEqual({"int": False, "prd": False}, run["rolloutsConfirmed"])
+
+        self.call(f"/api/runs/{run_id}/confirm-rollout", {})
+
+        run = self.wait(run_id, self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertIn("rollout confirmed by hand", run["stages"]["rollout-int"]["log"])
+        self.assertIn("rollout confirmed by Argo CD", run["stages"]["rollout-prd"]["log"])
 
     def test_setup_panel_checks_the_tokens(self):
         check = next(
@@ -171,3 +205,93 @@ class RejectedTokenTest(AppTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleaseTreeTest(AppTestCase):
+
+    def setUp(self):
+        super().setUp()
+
+        self.auto_confirm = False
+
+    def keep_tickets(self, run):
+        stage = run["stages"].get("closeTickets")
+
+        if stage and stage["status"] == "running" and not run["prdRelease"] and not run["ticketsDecision"]:
+            self.call(f"/api/runs/{run['id']}/keep-tickets", {})
+
+    def test_stg_goes_on_before_the_production_merge(self):
+        self.auto_confirm = True
+
+        run = self.run_release(
+            {"releaseEnvironments": ["stg", "int"], "tagSuffix": "20260101-1234567"}, self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+
+        # STG's rollout needs only the develop merge; INT's needs production.
+
+        self.assertLess(run["stages"]["rollout-stg"]["startedAt"], run["stages"]["productionMerge"]["finishedAt"])
+        self.assertLessEqual(run["stages"]["productionMerge"]["finishedAt"], run["stages"]["rollout-int"]["startedAt"])
+        self.assertEqual(["asahBuild"], run["trunk"])
+        self.assertEqual({"stg": ["rollout-stg"], "int": ["rollout-int"]}, run["lanes"])
+
+    def test_a_failure_stops_a_rollout_waiting_for_a_person(self):
+        self.fakes.held = True
+
+        status, body = self.call(
+            "/api/runs",
+            {"faroBranch": "hold-broken", "faroEnvironments": ["int"], "releaseEnvironments": ["int"],
+             "tagSuffix": "20260101-1234567"})
+
+        self.assertEqual(201, status, body)
+
+        # The Faro build fails only once INT's rollout waits for its button.
+
+        deadline = time.time() + 60
+
+        while time.time() < deadline and self.run_by_id(body["id"])["stages"]["rollout-int"]["status"] != "running":
+            time.sleep(0.1)
+
+        self.fakes.held = False
+
+        run = self.wait(body["id"], self.keep_tickets, timeout=90)
+
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("failed", run["stages"]["faroBuild-prd"]["status"])
+        self.assertEqual("aborted", run["stages"]["rollout-int"]["status"])
+        self.assertEqual("skipped", run["stages"]["faroDeploy-int"]["status"])
+
+    def test_a_cancelled_tree_release_resumes_where_it_stopped(self):
+        status, body = self.call(
+            "/api/runs", {"releaseEnvironments": ["stg", "int"], "tagSuffix": "20260101-1234567"})
+        run_id = body["id"]
+
+        deadline = time.time() + 60
+
+        while time.time() < deadline:
+            run = self.run_by_id(run_id)
+
+            if run["stages"]["rollout-int"]["status"] == "running" and run["stages"]["rollout-stg"]["status"] == "success":
+                break
+
+            time.sleep(0.1)
+
+        self.call(f"/api/runs/{run_id}/cancel", {})
+
+        run = self.wait(run_id, self.keep_tickets)
+
+        self.assertEqual("aborted", run["status"])
+
+        status, body = self.call(f"/api/runs/{run_id}/resume", {})
+
+        self.assertEqual(202, status, body)
+        self.assertEqual(["rollout-int"], body["retried"])
+        self.assertTrue({"jira", "developMerge", "productionMerge", "rollout-stg"} <= set(body["kept"]))
+
+        self.auto_confirm = True
+
+        run = self.wait(run_id, self.keep_tickets)
+
+        self.assertEqual("success", run["status"], run["error"])
+        self.assertEqual(2, len(self.gh_state_data()["pulls"]))
+        self.assertEqual(1, len([key for key, issue in self.fakes.issues.items() if issue["type"] == "Task"]))

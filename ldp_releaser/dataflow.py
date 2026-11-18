@@ -344,13 +344,17 @@ def publish(run, stage_name, name, template, worktree):
     return None
 
 
-def release_step(run):
+def release_step(run, stage_name="dataflow", environments=None):
 
     # Dataflow as part of a release, after the Composer DAGs: the login, the
     # commit that was released, the build, then every configuration of the
-    # released environments, with the release's tag suffix as the version.
+    # released environments (or of one environment's branch), with the
+    # release's tag suffix as the version.
 
-    if composer.wait_for_login(run, "dataflow") == "ABORTED":
+    if environments is None:
+        environments = run["releaseEnvironments"]
+
+    if composer.wait_for_login(run, stage_name) == "ABORTED":
         return "ABORTED"
 
     ref = run["asahCommit"]
@@ -361,17 +365,17 @@ def release_step(run):
     worktree = Path(tempfile.mkdtemp(prefix="ldp-releaser-dataflow-")) / "asah"
 
     try:
-        commit = composer.checkout(run, "dataflow", ref, worktree)
+        commit = composer.checkout(run, stage_name, ref, worktree)
 
         release.update_run(run, dataflowCommit=commit, dataflowVersion=run["tagSuffix"])
 
-        if build(run, "dataflow", worktree) == "ABORTED":
+        if build(run, stage_name, worktree) == "ABORTED":
             return "ABORTED"
 
-        for name in configurations_for(run["releaseEnvironments"]):
-            composer.activate_configuration(run, "dataflow", name)
+        for name in configurations_for(environments):
+            composer.activate_configuration(run, stage_name, name)
 
-            if deploy(run, "dataflow", name, worktree) == "ABORTED":
+            if deploy(run, stage_name, name, worktree) == "ABORTED":
                 return "ABORTED"
     finally:
         composer.remove_worktree(run, worktree)

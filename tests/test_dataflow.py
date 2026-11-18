@@ -268,7 +268,7 @@ class ReleaseWithDataflowTest(DataflowTestCase):
         self.assertEqual(commit, run["dataflowCommit"])
         self.assertEqual(run["tagSuffix"], run["dataflowVersion"])
         self.assertLess(
-            run["stages"]["composer"]["finishedAt"], run["stages"]["dataflow"]["startedAt"])
+            run["stages"]["composer-stg"]["finishedAt"], run["stages"]["dataflow-stg"]["startedAt"])
         self.assertEqual(
             [f"us-west1-docker.pkg.dev/example-staging/pipelines/streaming-pipeline:"
              f"{run['tagSuffix']}"],

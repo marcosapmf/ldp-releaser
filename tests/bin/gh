@@ -106,6 +106,20 @@ def api(state):
 
         return 0
 
+    # A branch head, from "heads" in the state: "repository:branch" -> sha.
+
+    if len(parts) >= 5 and parts[3] == "commits":
+        sha = state.get("heads", {}).get(f"{repository}:{'/'.join(parts[4:])}")
+
+        if not sha:
+            print("gh: No commit found for SHA (HTTP 422)", file=sys.stderr)
+
+            return 1
+
+        print(sha)
+
+        return 0
+
     if "--method" in sys.argv:
         fields = dict(
             argument.split("=", 1) for argument in sys.argv

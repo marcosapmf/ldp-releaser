@@ -209,7 +209,7 @@ class ReleaseWithComposerTest(AppTestCase):
         self.assertEqual(commit, run["composerCommit"])
         self.assertEqual(["team-stg"], run["composerDone"])
         self.assertLess(
-            run["stages"]["rollout"]["finishedAt"], run["stages"]["composer"]["startedAt"])
+            run["stages"]["rollout-stg"]["finishedAt"], run["stages"]["composer-stg"]["startedAt"])
         self.assertEqual(
             ["a_dag.py", "b_dag.py", "src/main/resources/"],
             [entry["source"] for entry in self.imports()])

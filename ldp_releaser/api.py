@@ -5,7 +5,7 @@ same-site checks."""
 import hmac
 import secrets
 
-from . import argocd, config, fixes
+from . import argocd, config, fixes, release
 
 TOKEN_FILE = config.CONFIG_DIR / "api-token"
 
@@ -76,12 +76,24 @@ def run_actions(run, settings):
     if run["finishedAt"] is None:
         actions.append(action("cancel", "Cancel", f"{base}/cancel"))
 
+    # An ended release starts again from the step that ended it.
+
+    if (run["finishedAt"] is not None and run.get("status") in ("aborted", "failed") and
+            run.get("kind") not in ("composer", "dataflow")):
+
+        actions.append(action("resume", "Resume", f"{base}/resume"))
+
     for name in run.get("stageOrder", list(run["stages"])):
         stage = run["stages"][name]
         running = stage["status"] == "running"
 
-        if name == "rollout" and running and not run["rolloutConfirmed"]:
-            actions.append(action("confirm-rollout", "Confirm rollout", f"{base}/confirm-rollout", name))
+        if (name == "rollout" or name.startswith("rollout-")) and running and not release.rollout_confirmed(run, name):
+            label = "Confirm rollout"
+
+            if name != "rollout":
+                label += f" ({name.partition('-')[2].upper()})"
+
+            actions.append(action("confirm-rollout", label, f"{base}/confirm-rollout", name))
 
         if (name == "closeTickets" and running and not run["prdRelease"] and
                 not run["ticketsDecision"]):
@@ -165,6 +177,11 @@ def waits_for_person(run, action, settings):
     # rollout button is only an override, so nobody is waited for.
 
     if action["kind"] == "confirm-rollout":
-        return not set(run.get("releaseEnvironments") or []) <= argocd.watched(settings)
+        environments = set(run.get("releaseEnvironments") or [])
+
+        if (action.get("stage") or "").startswith("rollout-"):
+            environments = {action["stage"].partition("-")[2]}
+
+        return not environments <= argocd.watched(settings)
 
     return action["kind"] in WAITING_ACTIONS

@@ -39,6 +39,10 @@ class FakeServices:
         self.queue = {}
         self.queue_ids = itertools.count(1)
         self.revisions = {}
+
+        # Faro deploys keep running while this is set.
+
+        self.hold_deploys = False
         self.slack = []
         self.ticket_numbers = itertools.count(101)
 
@@ -233,11 +237,19 @@ class FakeServices:
         match = re.fullmatch(rf"/job/{FOLDER}/job/([\w-]+)/api/json", path)
 
         if match:
+            # Newest first, as Jenkins lists them.
+
             builds = [
-                {"actions": [{"parameters": [
-                    {"name": name, "value": value}
-                    for name, value in build["params"].items()]}]}
-                for (job, _), build in self.builds.items() if job == match[1]
+                {
+                    "actions": [{"parameters": [
+                        {"name": name, "value": value}
+                        for name, value in build["params"].items()]}],
+                    "number": number,
+                    "result": build["result"],
+                    "url": f"{self.url}/job/{FOLDER}/job/{job}/{number}/",
+                }
+                for (job, number), build in sorted(self.builds.items(), key=lambda item: -item[0][1])
+                if job == match[1]
             ]
 
             successes = [
@@ -282,8 +294,15 @@ class FakeServices:
 
             if build["stopped"]:
                 build["result"] = "ABORTED"
-            elif branch == "hold" and self.held:
+            elif branch in ("hold", "hold-broken") and self.held:
                 pass
+            elif build["job"] == "deploy-faro" and self.hold_deploys:
+                pass
+            elif branch == "hold-broken" and build["polls"] >= 4:
+
+                # Held until the test lets it go, then fails.
+
+                build["result"] = "FAILURE"
             elif build["polls"] >= 4:
                 build["result"] = "SUCCESS"
 
